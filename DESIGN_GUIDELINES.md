@@ -13,7 +13,7 @@ AS2-spesifikaatio tukee `actor`-kentässä `Person`-tyyppiä, mutta tässä proj
 - `Organization` — julkaisija (Helsingin Sanomat, Helsingin kaupunki, HRI)
 - `Service` — automaattipalvelu (Voikko-enrichment, RSS-jobi, OG-scraper)
 
-**Käyttäjä voi kopioida sisältöä ja julkaista sen omanaan** `Create`-aktiviteetilla omalla actorillaan, mutta palvelu itse ei mallinna käyttäjäidentiteettejä eikä sosiaaligraafeja. Ei `followers`, ei `following`, ei `Person`-actoreita backendin omissa objekteissa.
+**Käyttäjä voi kopioida sisältöä ja julkaista sen omanaan** `Create`-aktiviteetilla omalla actorillaan. Käyttäjä tunnistetaan Gmail SSO:lla — actor-URI johdetaan Google-tilin tunnistuksesta. Palvelu itse ei mallinna käyttäjäidentiteettejä eikä sosiaaligraafeja. Ei `followers`, ei `following`, ei `Person`-actoreita backendin omissa objekteissa.
 
 **ActivityPub-federointi**: Tämä on tarkoituksella read-heavy-arkkitehtuuri. Server-to-server-protokollaa (Mastodon-yhteensopivuus) ei tavoitella. `outbox` on julkinen luettava syöte, ei federoitu inbox. WebFinger-endpointia ei toteuteta. Jos Actor-resursseja toteutetaan myöhemmin, se on erillinen päätös ja erillinen tiketti.
 
@@ -27,8 +27,9 @@ Kun asiat riitelevät eikä ihmiset, ei ole tarvetta osoittaa epämieltymystä m
 |---|---|---|
 | `Like` | ✅ Toteutetaan | Käyttäjä merkitsee artikkelin/asian kiinnostavaksi |
 | `Dislike` | ❌ Ei toteuteta | Ei tarvetta sosiaaliselle epämieltymykselle |
-| `Undo Like` | ❌ Ei toteuteta | Like-laskuri voi vain kasvaa |
+| `Undo Like` | ❌ Ei toteuteta | Like on tarkoituksellisesti peruuttamaton — kuten sanottu asiaa ei voi sanomatta |
 | `Announce` | ❌ Ei toteuteta | Käyttäjä julkaisee sisältöä `Create`-aktiviteetilla, ei uudelleenjakamisella |
+| `Update` | ✅ Toteutetaan | Client-sovellus kirjoittaa `Update`-aktiviteetin muokatusta sisällöstä |
 | `Delete` | ✅ Toteutetaan | Käyttäjä voi poistaa oman kommenttinsa tai artikkelinsa |
 
 ---
@@ -89,7 +90,10 @@ Article                        (taso 0 – thread_root)
 
 Tykkäysmäärä julkaistaan objektin `tags`-taulukossa tagina muotoa `likes:N`. Tagi on **anonyymi** — se kertoo vain lukumäärän, ei kuka on tykkännyt. Laskentajob päivittää tagin säännöllisesti sosiaalisesta BigQuerystä avoimen datan BigQueryyn.
 
-- Laskuri voi vain **kasvaa** — `Undo Like` ei ole mahdollinen
+- Laskuri voi vain **kasvaa** — `Undo Like` ei ole mahdollinen. Tämä on tietoinen valinta: kuten sanottu asiaa ei voi sanomatta.
+- **Duplikaattisuojaus**: Tykkäys tapahtuu Gmail SSO -tunnistuksen kautta. Sama Google-tili voi kirjata `Like`-aktiviteetin objektille vain kerran — backend hylkää duplikaatin.
+- **Bottisuojaus**: Cloudflare suojaa endpointit automatisoitujen pyyntöjen volyymilta. Vahvistamaton pyyntö ei pääse kirjoittamaan `Like`-aktiviteettia.
+- **GDPR**: `Like`-laskuri on anonyymi — avoimeen dataan siirtyy pelkkä lukumäärä, ei tunnistetta. Koska tieto ei ole henkilöön yhdistettävissä, GDPR:n tiedon poisto-oikeus ei koske sitä.
 - Tieto siitä kuka on tykkännyt ei koskaan siirry avoimeen dataan
 - Yksi `likes:`-tagi per objekti — päivitys korvaa edellisen
 
