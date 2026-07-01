@@ -4,7 +4,7 @@ Nämä periaatteet ohjaavat kaikkia arkkitehtuuripäätöksiä. Viittaa tähän 
 
 ---
 
-## Asiat riitelevat, ei ihmiset
+## Asiat riitelevät, ei ihmiset
 
 Tässä palvelussa sisältö on toimijana, ei henkilö.
 
@@ -21,7 +21,7 @@ AS2-spesifikaatio tukee `actor`-kentässä `Person`-tyyppiä, mutta tässä proj
 
 ## Ei `Dislike`, ei `Undo`, ei `Announce`
 
-Kun asiat riitelevat eikä ihmiset, ei ole tarvetta osoittaa epämieltymystä muita ihmisiä kohtaan. `Like` on sisällön kiinnostavuuden mittari, ei sosiaalisen hyväksynnän signaali.
+Kun asiat riitelevät eikä ihmiset, ei ole tarvetta osoittaa epämieltymystä muita ihmisiä kohtaan. `Like` on sisällön kiinnostavuuden mittari, ei sosiaalisen hyväksynnän signaali.
 
 | Aktiviteetti | Tila | Perustelu |
 |---|---|---|
@@ -30,6 +30,19 @@ Kun asiat riitelevat eikä ihmiset, ei ole tarvetta osoittaa epämieltymystä mu
 | `Undo Like` | ❌ Ei toteuteta | Like-laskuri voi vain kasvaa |
 | `Announce` | ❌ Ei toteuteta | Käyttäjä julkaisee sisältöä `Create`-aktiviteetilla, ei uudelleenjakamisella |
 | `Delete` | ✅ Toteutetaan | Käyttäjä voi poistaa oman kommenttinsa tai artikkelinsa |
+
+---
+
+## Delete ei poista historiaa
+
+`Delete` merkitsee objektin poistetuksi — se ei koskaan poista tietoja tietokannasta. Tämä on tarkoituksellinen päätös:
+
+- **Kommentti jolla on vastauksia** näytetään paikkamerkkinä `[kommentti poistettu]`. Vastausten konteksti säilyy, ketjun rakenne pysyy ehjänä.
+- **Kommentti ilman vastauksia** voidaan piilottaa kokonaan näkymästä, mutta rivi pysyy `activities`-taulussa `deleted=TRUE`-merkinnällä.
+- **Artikkeli** merkitään `deleted=TRUE` `objects`-taulussa. Se ei enää palaudu outbox-hauissa (`WHERE deleted = FALSE`).
+- Palvelin kirjoittaa `Delete`-aktiviteetin `activities`-tauluun append-only-lokin mukaisesti. Materialized view johtaa nykyisen tilan eventtilokin pohjalta.
+
+Historian säilyttäminen mahdollistaa moderoinnin jälkikäteen ja pitää ketjurakenteen luettavana.
 
 ---
 
@@ -43,7 +56,7 @@ AS2-speksin mukaan `published` on objektin luontihetki ja `updated` on muokkaush
 | OpenAhjo-päätös | Päätöksen alkuperäinen julkaisupäivä julkaisijan sivuilla | `metadata_modified` jos muuttunut |
 | HRI-datasetti | `metadata_created` CKAN-vastauksessa | `metadata_modified` |
 | OG-scrapattu sivu | `article:published_time` OG-tagista | `article:modified_time` |
-| Fallback (ei metatietoa) | `null` — merkitaan epätarkkuudeksi lokiin | Scrape-hetki |
+| Fallback (ei metatietoa) | `null` — merkitään epätarkkuudeksi lokiin | Scrape-hetki |
 
 > [!NOTE]
 > Fallback-tapauksessa `published` jätetään `null`:ksi koska julkaisuhetkeä ei tiedetä. `updated` asetetaan scrape-hetkeen, jolloin objekti näkyy haussa mutta epätarkkuus on jäljitettävissä logista. `published = null` -objektit järjestetään relevanssijärjestyksen loppuun (`published DESC NULLS LAST`).
@@ -58,7 +71,7 @@ ActivityPub edellyttää, että `actor`-URL palauttaa täydellisen Actor-objekti
 
 ## Kommenttiketjun syvyysrajoitus
 
-Sallittu syvyys on tasan kaksi tasoa:
+Sallittu syvyys on tasan **kaksi tasoa**:
 
 ```
 Article                        (taso 0 – thread_root)
@@ -66,7 +79,9 @@ Article                        (taso 0 – thread_root)
        └── Reply               (taso 2 – in_reply_to = Comment)
 ```
 
-Vastaukseen ei voi vastata. Kirjoituspalvelu hylkää yrityksen `400 Bad Request` -vastauksella.
+**Vastaukseen ei voi vastata.** Kirjoituspalvelu hylkää yrityksen `400 Bad Request` -vastauksella. Tämä rajoitus on tarkoituksellinen: syvät ketjut hajottavat kontekstin ja vaikeuttavat lukemista. Kaksi tasoa riittää asian käsittelyyn — lisää tasoja ei tarvita, koska asiat eivät tarvitse omaa alaketjuaan.
+
+`thread_root` täydennetään aina automaattisesti palvelimella — client ei koskaan aseta sitä itse.
 
 ---
 
@@ -112,10 +127,19 @@ Client pyytää aina alusta `n` kappaletta. Ei kursoreja, ei sivunumeroita. Clie
 ```
 GET /ap/outbox?tag=asuminen&n=5    → top-5
 GET /ap/outbox?tag=asuminen&n=50   → top-50 (sisältää edellisen 5, client suodattaa)
-GET /ap/outbox?tag=asuminen&n=500   → top-500 (tämä on maksimi, sen jälkeen käyttäjälle näytetään tagipilvi mistä voi lähteä pureutumaan. Client tekee haun sillä tägillä.)
+GET /ap/outbox?tag=asuminen&n=500  → top-500 (maksimi)
 ```
 
 `OrderedCollectionPage`-tasoa ei tarvita — pelkkä `OrderedCollection` riittää.
+
+### n=500 on katto — hinta ja suorituskyky
+
+Maksimi `n=500` on valittu kahdesta syystä:
+
+1. **Hinta**: BigQuery laskuttaa skannatun datan mukaan. 500 riviä 100 000 rivin taulusta skannaa ~110 MB (~$0.0007/pyyntö). Suurempi `n` kasvattaa kustannuksia lineaarisesti. Ilmainen 1 TB/kk -kiintiö kattaa ~9 000 pyyntöä — rajoite pitää kustannukset ennustettavina.
+2. **Suorituskyky**: BigQuery-kysely 500+ rivillä alkaa hidastua client-puolella JSON-deserialisoinnissa ja DOM-renderöinnissä. 500 tulosta yhdellä hakusanalla on enemmän kuin kukaan ehtii lukea — jos tuloksia on enemmän kuin 500, oikea ratkaisu on tarkentaa hakua, ei kasvattaa `n`:ää.
+
+Kun `totalItems > 500`, UI näyttää tagipilven josta käyttäjä voi tarkentaa hakua. Tämä on parempi UX kuin sivuttaa läpi tuhansia tuloksia.
 
 ### AS2-rakenne
 
@@ -148,3 +172,4 @@ Ei `next`, ei `prev`, ei `cursor`, ei `first`. `totalItems` kertoo clientille pa
 - Kaikki muut tiketit — nämä periaatteet ohjaavat kaikkia arkkitehtuuripäätöksiä
 - #10 Outbox-endpoint
 - #11 Tykkäyslaskuri (`likes:N`-tagi)
+- #13 Delete-toiminto

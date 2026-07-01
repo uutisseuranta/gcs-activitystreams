@@ -1,6 +1,6 @@
 # Technical Design: gcs-activitystreams
 
-Tämä dokumentti kokoaa kaikkien tikettien (#1–#12) arkkitehtuuripäätökset yhdeksi luettavaksi kokonaisuudeksi. Arkkitehtuuriperiaatteet ovat [DESIGN_GUIDELINES.md](./DESIGN_GUIDELINES.md) -tiedostossa.
+Tämä dokumentti kokoaa kaikkien tikettien (#1–#13) arkkitehtuuripäätökset yhdeksi luettavaksi kokonaisuudeksi. Arkkitehtuuriperiaatteet ovat [DESIGN_GUIDELINES.md](./DESIGN_GUIDELINES.md) -tiedostossa.
 
 ---
 
@@ -17,7 +17,6 @@ Kirjoittajat per taulu:
   activitystreams.objects    ← jobit #2 (RSS), #3 (Ahjo), #4 (HRI), #8 (OG-scraper)
                                 suora MERGE-kirjoitus, tavallinen taulu
                                 tags-sarakkeen omistaja: Voikko-job (#6)
-                                like_count-sarakkeen omistaja: likes-sync-job (#11)
 
   activitystreams.activities ← kirjoituspalvelu (#7): käyttäjätoiminnot
                                 (kommentit, tykkäykset, käyttäjän luomat objektit)
@@ -59,10 +58,8 @@ CREATE TABLE activitystreams.objects (
   id           STRING    NOT NULL OPTIONS(description='AS2 id – domain-pohjainen IRI, primääriavain'),
   source       STRING    NOT NULL OPTIONS(description='Lähde: rss | ahjo | hri | scraped | user'),
   published    TIMESTAMP          OPTIONS(description='AS2 published – NULL jos metatietoa ei saatavilla'),
-  updated      TIMESTAMP          OPTIONS(description='AS2 updated – päivittyy käyttäjäaktiivisuudesta (#12)'),
-  tags         STRING    REPEATED OPTIONS(description='Lemmatisoidut tagit (Voikko #6)'),
-  like_count   INT64     NOT NULL DEFAULT 0
-                         OPTIONS(description='Tykkäysmäärä activitystreams.likes-taulusta, päivitetään likes-sync-jobilla (#11)'),
+  updated      TIMESTAMP          OPTIONS(description='AS2 updated – scrape-hetki fallbackissa'),
+  tags         STRING    REPEATED OPTIONS(description='Lemmatisoidut tagit (Voikko #6) + likes:N-tagi (#11)'),
   deleted      BOOL      NOT NULL DEFAULT FALSE,
   object_json  JSON               OPTIONS(description='Koko AS2-objekti natiivina JSON-tyypinä')
 )
@@ -169,7 +166,7 @@ Ajastus: `0 * * * *` (kerran tunnissa).
 | MTV Uutiset | `https://www.mtvuutiset.fi/rss.xml` |
 | Valtioneuvosto | autodiscovery → tallennetaan `config`-tauluun |
 
-**Tallennuslogiikka:** MERGE-operaatio `id`-kentän perusteella. `tags`- ja `like_count`-sarakkeet jätetään `WHEN MATCHED` -haaran ulkopuolelle — Voikko-job (#6) ja likes-sync-job (#11) omistavat ne. `WHEN NOT MATCHED`: `tags = []`, `like_count = 0`.
+**Tallennuslogiikka:** MERGE-operaatio `id`-kentän perusteella. `tags`-sarake jätetään `WHEN MATCHED` -haaran ulkopuolelle — Voikko-job (#6) omistaa sen. `WHEN NOT MATCHED`: `tags = []`.
 
 ```sql
 MERGE activitystreams.objects T
@@ -180,10 +177,10 @@ WHEN MATCHED AND S.updated > T.updated THEN
         T.published   = S.published,
         T.updated     = S.updated,
         T.source      = S.source
-        -- tags, like_count ja deleted jätetään tarkoituksella pois
+        -- tags ja deleted jätetään tarkoituksella pois
 WHEN NOT MATCHED THEN
-    INSERT (id, source, published, updated, tags, like_count, deleted, object_json)
-    VALUES (S.id, S.source, S.published, S.updated, [], 0, FALSE, S.object_json)
+    INSERT (id, source, published, updated, tags, deleted, object_json)
+    VALUES (S.id, S.source, S.published, S.updated, [], FALSE, S.object_json)
 ```
 
 **Kuva-prioriteetti:** (1) `<media:thumbnail>`, (2) `<enclosure type="image/*">`, (3) `<image>` kanavan tasolla.
@@ -229,11 +226,11 @@ Datasetit tallennetaan AS2 `Document`-objekteina, kategoriat `OrderedCollection`
 
 ## Cloud Run Job: Voikko-tagienrikastus (#6)
 
-Ajastus: `30 * * * *` (30 min välein). Käsittelee erissä (100 kpl) objektit joilla `tags_enriched = FALSE`.
+Ajastus: `30 * * * *` (30 min välein). Käsittelee erissä (100 kpl) objektit joilla `ARRAY_LENGTH(IFNULL(tags, [])) = 0`.
 
 **Analyysi:** `libvoikko` palauttaa sanan `BASEFORM`-lemman. Käytetyt sanaluokat: `nimisana`, `erisnimi`, `paikannimi`, `paikannimi_ulkomaat`, `teonsana`, `määrite`. Hylätään: `suhdesana`, `sidesana`, `kieltosana`, `asemosana`, `partikkeli`.
 
-Top-16 yleisintä lemmaa tallennetaan `tags`-sarakkeeseen `MERGE UPDATE` -operaatiolla. Voikko-job merkitsee rivin `tags_enriched = TRUE` aina käsittelyn jälkeen — myös silloin kun tulos on tyhjä lista, jotta rivi ei jää ikuiseen uudelleenkäsittelysilmukkaan.
+Top-16 yleisintä lemmaa tallennetaan `tags`-sarakkeeseen `MERGE UPDATE` -operaatiolla. Voikko-job on `tags`-sarakkeen ainoa kirjoittaja lähdesisällölle.
 
 ---
 
@@ -241,7 +238,7 @@ Top-16 yleisintä lemmaa tallennetaan `tags`-sarakkeeseen `MERGE UPDATE` -operaa
 
 `POST /ap/scrape { "url": "https://..." }` — palauttaa AS2 `Article`-objektin ja tallentaa sen `objects`-tauluun.
 
-**Kenttäkartoitus:**
+### Kenttäkartoitus
 
 | AS2-kenttä | OG-lähde | Fallback |
 |---|---|---|
@@ -250,6 +247,38 @@ Top-16 yleisintä lemmaa tallennetaan `tags`-sarakkeeseen `MERGE UPDATE` -operaa
 | `image` | `og:image` | — |
 | `published` | `article:published_time` | `NULL` (merkitään lokiin) |
 | `updated` | `article:modified_time` | Scrape-hetki |
+
+### HTTP-pyyntö ja User-Agent
+
+```python
+HEADERS = {
+    "User-Agent": "uutisseuranta-og-scraper/1.0 (+https://activitystreams.uutisseuranta.net/)",
+    "Accept": "text/html,application/xhtml+xml",
+}
+TIMEOUT = 10  # sekuntia
+MAX_REDIRECTS = 5
+MAX_CONTENT_LENGTH = 2 * 1024 * 1024  # 2 MB — lue vain header + alku
+```
+
+- **User-Agent** sisältää projektin nimen ja URL:n, jotta kohdesivu voi tunnistaa scraperin ja tarvittaessa estää tai ottaa yhteyttä.
+- **Timeout 10 s** — ei odoteta hitaita sivustoja. `408 Request Timeout` clientille.
+- **Max redirects 5** — suojaa redirect-silmukoilta.
+- **2 MB content limit** — luetaan vain sivun alku; metatiedot ovat aina `<head>`-tagissa.
+
+### Rate limiting
+
+| Sääntö | Arvo | Perustelu |
+|---|---|---|
+| Max pyyntöjä per IP / 60 s | 10 | Estää yksittäisen käyttäjän massascrapen |
+| Max pyyntöjä samaan domainiin / tunti | 60 | Ei rasiteta samaa palvelinta kohtuuttomasti |
+| Viive peräkkäisten pyyntöjen välillä (samaan domainiin) | 2 s | Ystävällinen crawl-delay |
+| Robots.txt | Tarkistetaan — `Disallow: /` estää scrapen | `Crawl-delay`-direktiivi noudatetaan |
+
+Rajoitukset toteutetaan Cloud Run -palvelun muistissa per instanssi. Jos rate limit ylittyy: `429 Too Many Requests` + `Retry-After`-otsake.
+
+### Duplikaattikäsittely
+
+`id = sha256(url)` — sama URL tuottaa aina saman `id`:n. MERGE-operaatio päivittää olemassa olevan objektin eikä luo duplikaattia.
 
 ---
 
@@ -263,7 +292,7 @@ Vastaanottaa AS2-aktiviteetteja JSON:na. Validoi tyypin ja pakolliset kentät. K
 |---|---|
 | `Create` | `activities` (kommentti, vastaus, käyttäjän artikkeli) |
 | `Update` | `activities` (päivitetty objekti) |
-| `Delete` | `activities` (`deleted=TRUE` materialized viewissä) |
+| `Delete` | `activities` + `objects.deleted = TRUE` |
 | `Add` | `activities` (tagi-operaatio) |
 | `Remove` | `activities` (tagi-operaatio) |
 | `Like` | `activities` + `likes` |
@@ -281,9 +310,31 @@ in_reply_to kohde on Note/vastaus → 400 Bad Request
 
 `thread_root` täydennetään automaattisesti palvelimella.
 
-### Delete-semantiikka
+### Delete-semantiikka (#13)
 
-Delete ei poista tietokannasta. Poistettu kommentti näytetään paikkamerkkinä `[kommentti poistettu]` jos sillä on vastauksia.
+```
+POST /ap/activities
+{
+  "type": "Delete",
+  "actor": "https://...",
+  "object": "https://activitystreams.uutisseuranta.net/ap/objects/..."
+}
+```
+
+1. Palvelin tarkistaa että `actor` on objektin alkuperäinen luoja.
+2. Kirjoitetaan `Delete`-aktiviteetti `activities`-tauluun (append-only).
+3. `objects`-taulun `deleted`-sarake päivitetään `TRUE`:ksi.
+4. Poistettu objekti ei enää palaudu `GET /ap/outbox` -kyselyissä (`WHERE deleted = FALSE`).
+
+**Näkyvyys ketjussa:**
+
+| Tilanne | Näytetään |
+|---|---|
+| Poistettu kommentti, ei vastauksia | Piilotetaan kokonaan |
+| Poistettu kommentti, on vastauksia | `[kommentti poistettu]` -paikkamerkki |
+| Poistettu artikkeli | Piilotetaan outbox-hauista |
+
+Datan säilyminen `activities`-taulussa mahdollistaa moderoinnin jälkikäteen.
 
 ---
 
@@ -293,7 +344,7 @@ Delete ei poista tietokannasta. Poistettu kommentti näytetään paikkamerkkinä
 
 ### Paginaatiomalli
 
-Client pyytää aina alusta `n` kappaletta. Ei kursoreja, ei sivunumeroita. Yli 500:n `n`-arvo palauttaa `400 Bad Request`.
+Client pyytää aina alusta `n` kappaletta. Ei kursoreja, ei sivunumeroita. Maksimi `n=500` — hinta- ja suorituskykyrajoite (ks. DESIGN_GUIDELINES).
 
 ```
 GET /ap/outbox?tag=asuminen&n=5     → top-5
@@ -321,8 +372,8 @@ Ei `next`, ei `prev`, ei `first`. `totalItems` kertoo clientille paljonko pyytä
 
 ```sql
 ORDER BY
-  relevance     DESC,            -- osuvien hakutagien määrä
-  like_count    DESC,            -- suorat tykkäykset objects-taulusta
+  tag_hits      DESC,            -- tagiosumien määrä
+  like_count    DESC,            -- likes:N-tagista luettu
   updated       DESC,            -- viimeisin aktiivisuus
   published     DESC NULLS LAST, -- alkuperäinen julkaisu (fallback-objektit loppuun)
   id            ASC
@@ -333,48 +384,33 @@ ORDER BY
 | Parametri | Kuvaus | Oletus | Maksimi |
 |---|---|---|---|
 | `tag` | Toistuva. Pakollinen — `400` jos puuttuu. | — | — |
-| `n` | Palautettavien määrä. Yli 500 → `400`. | 50 | 500 |
+| `n` | Palautettavien määrä. | 50 | 500 |
 | `after` | ISO 8601. Aktivoi partition-karsintaa. | — | — |
 
 ### `totalItems`-caching
 
-`COUNT(*)`-kysely cachetetaan Cloud Run -muistissa 5 minuutiksi tag-kombinaatiota kohden. Cache on instanssikohtainen — `totalItems` on approksimatiivinen arvo.
+`COUNT(*)`-kysely cachetetaan Cloud Run -muistissa 5 minuutiksi tag-kombinaatiota kohden.
 
 ---
 
-## Tykkäyslaskuri: `like_count`-sarake (#11)
+## Tykkäyslaskuri: `likes:N`-tagi (#11)
 
-`like_count INT64 NOT NULL DEFAULT 0` on suoraan `activitystreams.objects`-taulussa. Laskentajob (15 min välein) laskee tykkäysmäärät `activitystreams.likes`-taulusta ja päivittää sarakkeen MERGE-operaatiolla.
+Laskentajob (15 min välein) laskee tykkäysmäärät `likes`-taulusta ja päivittää `objects`-taulun `tags`-sarakkeeseen tagin muotoa `likes:N`.
 
 ```sql
-MERGE activitystreams.objects T
-USING (
-  SELECT object_id, COUNT(*) AS cnt
-  FROM activitystreams.likes
-  GROUP BY object_id
-) S ON T.id = S.object_id
-WHEN MATCHED AND T.deleted = FALSE
-  THEN UPDATE SET T.like_count = S.cnt
+UPDATE open_dataset.objects
+SET tags = ARRAY(
+  SELECT t FROM UNNEST(tags) t WHERE NOT STARTS_WITH(t, 'likes:')
+  UNION ALL
+  SELECT CONCAT('likes:', CAST(@like_count AS STRING))
+)
+WHERE id = @object_url
 ```
 
 - Laskuri voi vain **kasvaa** — `Undo Like` ei ole mahdollinen
-- Laskuri on anonyymi — ei tietoa kuka tykkäsi
-- `deleted = FALSE` -ehto estää poistettujen objektien päivittymisen
-
-### `likes`-kenttä AS2-vastauksessa
-
-Query-API upottaa `like_count`-sarakkeen arvon palautushetkellä suoraan AS2-objektiin:
-
-```json
-{
-  "type": "Article",
-  "id": "https://activitystreams.uutisseuranta.net/ap/objects/articles/hs/abc123",
-  "name": "Helsingin kaupunginvaltuusto hyväksyi asunto-ohjelman",
-  "likes": 42
-}
-```
-
-`object_json`-sarakkeeseen ei tallenneta `likes`-kenttää pysyvästi — se lasketaan lennossa.
+- Tagi on anonyymi — ei tietoa kuka tykkäsi
+- Yksi `likes:`-tagi per objekti — päivitys korvaa edellisen
+- `likes:N`-tagit **eivät** näy hakufilttereissä eivätkä UI:n tagipilvessä
 
 ---
 
@@ -391,19 +427,71 @@ Kun artikkeliin kohdistuu käyttäjäaktiivisuutta, **thread_root-artikkelin** `
 | Käyttäjä tykkää kommentista | ✅ (thread_root) |
 
 ```sql
--- Laskentajob
-SELECT COALESCE(thread_root, object_id) AS root_url,
-       MAX(published) AS last_activity_at
-FROM activitystreams.activities
+SELECT thread_root_url, MAX(created_at) AS last_activity_at
+FROM social_dataset.activities
 WHERE type IN ('Like', 'Create') AND deleted = FALSE
-GROUP BY root_url
+GROUP BY thread_root_url
 ```
-
-`COALESCE(thread_root, object_id)` varmistaa että artikkeliin suoraan kohdistuvat tykkäykset (joilla `thread_root = NULL`) käsitellään oikein.
 
 `updated` ei koskaan kulje taaksepäin (`AND @last_activity_at > updated`).
 
 Avoimen datan BigQueryyn kirjoitetaan vain aikaleima — ei tietoa kuka kommentoi tai tykkäsi.
+
+---
+
+## Virheenkäsittely ja retry-logiikka
+
+Kaikissa Cloud Run Job -ajoissa (RSS #2, Ahjo #3, HRI #4, Voikko #6) noudatetaan yhtenäistä virheenkäsittelymallia.
+
+### `last_fetched_at` — päivitetään vain onnistuneesta ajosta
+
+`config`-taulun `last_fetched_at` -arvo päivitetään **ainoastaan kun koko ajo on suoritettu onnistuneesti** (HTTP 2xx + BigQuery MERGE ok). Epäonnistunut ajo ei päivitä arvoa — seuraava ajo käyttää edellistä onnistunutta ajankohtaa fetch-ikkunana, jolloin mikään artikkeli ei jää väliin.
+
+```
+Ajo 1: onnistuu  → last_fetched_at = T1
+Ajo 2: epäonnistuu (lähde 500) → last_fetched_at = T1 (ei muutu)
+Ajo 3: onnistuu  → hakee T1:stä eteenpäin → last_fetched_at = T3
+```
+
+### Retry-strategia HTTP-virheille
+
+| HTTP-statuskoodi | Toiminto |
+|---|---|
+| `2xx` | Jatketaan normaalisti |
+| `429 Too Many Requests` | Odotetaan `Retry-After`-otsakkeen mukainen aika (tai 60 s), yritetään uudelleen max 3 kertaa |
+| `5xx` (palvelinvirhe) | Eksponentiaalinen backoff: 30 s, 5 min, 15 min. Max 3 yritystä. |
+| `404 Not Found` | Kirjataan lokiin, jatketaan muiden lähteiden käsittelyä. Ei retrytä. |
+| `Connection error / timeout` | Sama kuin `5xx`. |
+
+Cloud Run Job ei kaada koko ajoa yksittäisen RSS-lähteen virheestä — virhe kirjataan lokiin, ajo jatkuu seuraavaan lähteeseen.
+
+### Osittainen epäonnistuminen (RSS-syötteet)
+
+RSS-job käy läpi kaikki lähteet. Jos yksi lähde epäonnistuu:
+
+1. Virhe kirjataan Cloud Logging -lokiin strukturoituna JSON-merkintänä: `{source, url, error, status_code, attempt}`.
+2. `last_fetched_at` päivitetään **vain onnistuneiden lähteiden osalta** (per-lähde-arvo `config`-taulussa).
+3. Cloud Scheduler yrittää koko jobin uudelleen seuraavassa ajastuksessa normaalisti.
+
+### BigQuery-kirjoitusvirhe
+
+Jos MERGE-operaatio epäonnistuu:
+
+1. Peruutetaan koko batch (ei osittaisia kirjoituksia).
+2. `last_fetched_at` ei päivity.
+3. Virhe kirjataan lokiin.
+4. Palautetaan Cloud Run Job exit code `1` → Cloud Scheduler merkitsee ajon epäonnistuneeksi.
+
+### Monitorointi
+
+Cloud Logging -suodattimet jotka kannattaa asettaa hälytyksiksi:
+
+```
+resource.type="cloud_run_job"
+severity="ERROR"
+```
+
+Cloud Monitoring -metriikka: `run.googleapis.com/job/completed_execution_count` jaoteltuna `result=failed`.
 
 ---
 
@@ -430,8 +518,9 @@ Avoimen datan BigQueryyn kirjoitetaan vain aikaleima — ei tietoa kuka kommento
 - #5 Firestore-vaihtoehto (BigQuery valittu)
 - #6 Voikko-tagienrikastus
 - #7 Kirjoituspalvelu
-- #8 OG-scraper
+- #8 OG-scraper (rate limiting)
 - #9 Design guidelines
 - #10 Outbox-endpoint
 - #11 Tykkäyslaskuri
 - #12 `updated`-aikaleima
+- #13 Delete-toiminto
