@@ -8,7 +8,7 @@ Nämä periaatteet ohjaavat kaikkia arkkitehtuuripäätöksiä. Viittaa tähän 
 
 Tässä palvelussa sisältö on toimijana, ei henkilö.
 
-AS2-spesifikaatio tukee `actor`-kentässä `Person`-tyypppiä, mutta tässä projektissa actoreita ei käytetä käyttäjäidentiteetteinä. Kaikki `actor`-arvot ovat joko:
+AS2-spesifikaatio tukee `actor`-kentässä `Person`-tyyppiä, mutta tässä projektissa actoreita ei käytetä käyttäjäidentiteetteinä. Kaikki `actor`-arvot ovat joko:
 
 - `Organization` — julkaisija (Helsingin Sanomat, Helsingin kaupunki, HRI)
 - `Service` — automaattipalvelu (Voikko-enrichment, RSS-jobi, OG-scraper)
@@ -35,7 +35,7 @@ Kun asiat riitelevat eikä ihmiset, ei ole tarvetta osoittaa epämieltymystä mu
 
 ## `published` = alkuperäinen julkaisuhetki julkaisijan palvelussa
 
-AS2-speksin mukaan `published` on objektin luontihetki ja `updated` on muokkaushetki. `published` ei koskaan muutu objektin päivityksisä — se on historiallinen tosiasia.
+AS2-speksin mukaan `published` on objektin luontihetki ja `updated` on muokkaushetki. `published` ei koskaan muutu objektin päivityksissä — se on historiallinen tosiasia.
 
 | Lähde | `published` | `updated` |
 |---|---|---|
@@ -43,7 +43,10 @@ AS2-speksin mukaan `published` on objektin luontihetki ja `updated` on muokkaush
 | OpenAhjo-päätös | Päätöksen alkuperäinen julkaisupäivä julkaisijan sivuilla | `metadata_modified` jos muuttunut |
 | HRI-datasetti | `metadata_created` CKAN-vastauksessa | `metadata_modified` |
 | OG-scrapattu sivu | `article:published_time` OG-tagista | `article:modified_time` |
-| Fallback (ei metatietoa) | Scrape-hetki — merkitaan epätarkkuudeksi lokiin | — |
+| Fallback (ei metatietoa) | `null` — merkitaan epätarkkuudeksi lokiin | Scrape-hetki |
+
+> [!NOTE]
+> Fallback-tapauksessa `published` jätetään `null`:ksi koska julkaisuhetkeä ei tiedetä. `updated` asetetaan scrape-hetkeen, jolloin objekti näkyy haussa mutta epätarkkuus on jäljitettävissä logista. `published = null` -objektit järjestetään relevanssijärjestyksen loppuun (`published DESC NULLS LAST`).
 
 ---
 
@@ -98,7 +101,7 @@ Lähde (RSS, Ahjo, HRI, OG-scrape) on sisäinen toteutusyksityiskohta, ei julkin
 
 ### Järjestys
 
-Outbox palauttaa objektit **tagirelevanssijärjestyksessä**, ei aikajärjestyksessä. Relevanssi on yksinkertainen osumien laskenta: kuinka monta clientin pyytämistä tageista löytyy objektin `tags`-kentästä. Tasatilanteessa järjestetään `likes_count DESC, updated DESC, published DESC, id ASC` missä `likes_count` luetaan `likes:N`-tagista.
+Outbox palauttaa objektit **tagirelevanssijärjestyksessä**, ei aikajärjestyksessä. Relevanssi on yksinkertainen osumien laskenta: kuinka monta clientin pyytämistä tageista löytyy objektin `tags`-kentästä. Tasatilanteessa järjestetään `likes_count DESC, updated DESC, published DESC NULLS LAST, id ASC` missä `likes_count` luetaan `likes:N`-tagista.
 
 Aikajärjestystä ei käytetä pääjärjestyksenä, koska saman aiheen uutiset eri lähteistä ovat tasavertaisia riippumatta siitä, kuka julkaisi ensin.
 
