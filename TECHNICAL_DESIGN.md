@@ -60,9 +60,90 @@ Huom: `likes-and-updated-job` korvaa aiemmat erilliset `likes-sync-job` ja `acti
 |---|---|---|
 | `GET /ap/outbox` | Julkinen, ei autentikointia | Avoin data — sama periaate kuin RSS-syötteet |
 | `POST /ap/scrape` | Julkinen, ei autentikointia | Avoin data — käyttäjä osoittaa julkisen URL:n scrapattavaksi |
-| `POST /ap/activities` | Cloud IAM `roles/run.invoker` | Kirjoitusoperaatio — vain valtuutetut palvelutilit voivat kutsua |
+| `POST /ap/activities` (palvelutilit) | Cloud IAM `roles/run.invoker` | Cloud Scheduler / Cloud Run Jobit — ei muutu |
+| `POST /ap/activities` (loppukäyttäjät) | Google OIDC `id_token` — sovellustason validointi | Gmail SSO, ks. alla (#19) |
 
 Kaikki kolme palvelua ovat erillisiä Cloud Run -palveluja. `og-scraper` on julkinen kirjoitusendpoint (tallentaa BigQueryyn), mutta koska data on avointa eikä käyttäjäkohtaista, autentikointia ei vaadita — kirjoitusoikeus BigQueryyn on Cloud Run -palvelun palvelutilillä IAM-oikeuksilla, ei kutsujalla.
+
+### Gmail SSO ja kirjoituspalvelu (#7, #19)
+
+Kirjoituspalvelu (#7) tukee loppukäyttäjien autentikointia Google-kirjautumisella (Gmail SSO, OIDC `id_token`). Cloud IAM -rooli `roles/run.invoker` säilyy **palvelutilien** (Cloud Scheduler, Cloud Run Jobit) kontrollimekanismina. Loppukäyttäjien valtuutus tapahtuu sovellustasolla `id_token`-validoinnilla — erillistä GCP IAM -roolia ei loppukäyttäjille luoda.
+
+#### Autentikaatiovirta
+
+```
+Selain
+  └─▶ Google Sign-In (OAuth2 / OIDC)
+        └─▶ id_token (JWT: sub, email, email_verified)
+              └─▶ POST /ap/activities
+                    Authorization: Bearer <id_token>
+                        └─▶ Cloud Run (write-api)
+                              └─▶ google-auth-library: verify_oauth2_token()
+                                    └─▶ email_verified = true?
+                                          └─▶ sub → actor-IRI → BigQuery
+```
+
+#### Token-validointilogiikka
+
+```python
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
+
+def verify_google_token(bearer_token: str) -> dict:
+    """
+    Palauttaa: { sub, email, email_verified }
+    Heittää: ValueError jos token ei kelpaa
+    """
+    info = id_token.verify_oauth2_token(
+        bearer_token,
+        google_requests.Request(),
+        audience=GOOGLE_CLIENT_ID  # env-muuttuja
+    )
+    if not info.get("email_verified"):
+        raise ValueError("email_verified = false")
+    return info
+
+def actor_iri(sub: str) -> str:
+    return f"https://activitystreams.uutisseuranta.net/ap/users/{sub}"
+```
+
+HTTP-statuskoodit autentikaatiovirheissä:
+
+| Tilanne | Status |
+|---|---|
+| `Authorization`-otsake puuttuu | `401 Unauthorized` |
+| Token vanhentunut tai väärä `aud` | `401 Unauthorized` |
+| `email_verified = false` | `403 Forbidden` |
+| `actor` ≠ tokenin `sub` (Update/Delete) | `403 Forbidden` |
+
+#### Sovellustason rooli: activitystreams-writer
+
+Validoitu Google-tili (`email_verified = true`) saa sovellustason roolin **activitystreams-writer**. Tämä ei ole GCP IAM -rooli vaan kirjoituspalvelun sisäinen konsepti.
+
+| Aktiviteetti | Sallittu | Ehto |
+|---|---|---|
+| `Create` | ✅ | `email_verified = true` |
+| `Like` | ✅ | `email_verified = true` |
+| `Update` | ✅ | `email_verified = true` + `actor`-IRI:n `sub` vastaa tokenin `sub` |
+| `Delete` | ✅ | `email_verified = true` + `actor`-IRI:n `sub` vastaa tokenin `sub` |
+| `Dislike`, `Announce`, `Undo` | ❌ | `400 Bad Request` — ks. [Tuetut aktiviteetit](#tuetut-aktiviteetit) |
+
+#### `actor`-IRI ja Google `sub`
+
+Käyttäjän pysyvä identiteetti (AS2 `actor`) sidotaan Google-tilin `sub`-kenttään, joka on vakaa tunnus sähköpostiosoitteen mahdollisista muutoksista huolimatta:
+
+```
+actor = "https://activitystreams.uutisseuranta.net/ap/users/{google-sub}"
+```
+
+Käyttäjän luomien objektien `id`-kenttä sisältää edelleen erillisen `ulid`-tunnuksen (ks. [`id`-kentän kaava lähteittäin](#id-kentän-kaava-lähteittäin)), mutta omistajuustarkistus tehdään `actor`-IRI:n `sub`-osasta.
+
+#### Ympäristömuuttujat (täydennys #16:een)
+
+| Muuttuja | Arvo | Kuvaus |
+|---|---|---|
+| `GOOGLE_CLIENT_ID` | `<OAuth2-client-id>.apps.googleusercontent.com` | `id_token`-validointiin |
+| `ALLOWED_EMAIL_DOMAINS` | *(tyhjä = kaikki)* | Haluttaessa rajoitetaan pääsy tiettyihin sähköpostidomaineihin |
 
 ---
 
@@ -169,7 +250,8 @@ Config-taulun rivejä ei koskaan poisteta — vain päivitetään (`MERGE UPDATE
 | HRI-datasetti | `https://activitystreams.uutisseuranta.net/ap/objects/hri/datasets/{ckan-uuid}` |
 | HRI-kategoria | `https://activitystreams.uutisseuranta.net/ap/objects/hri/groups/{group-name}` |
 | OG-scrapattu | `https://activitystreams.uutisseuranta.net/ap/objects/scraped/{sha256(url)}` |
-| Käyttäjän luoma | `https://activitystreams.uutisseuranta.net/ap/objects/user/{google-sub}/{ulid}` |
+| Käyttäjän luoma objekti | `https://activitystreams.uutisseuranta.net/ap/objects/user/{google-sub}/{ulid}` |
+| Käyttäjän identiteetti (actor) | `https://activitystreams.uutisseuranta.net/ap/users/{google-sub}` |
 
 ### `source`-sarake vs. `source`-query-parametri
 
@@ -313,7 +395,7 @@ Endpoint on julkinen (ks. [Autentikaatio ja valtuutus](#autentikaatio-ja-valtuut
 
 Vastaanottaa AS2-aktiviteetteja JSON:na. Validoi tyypin ja pakolliset kentät. Kirjoittaa `activities`- ja tarvittaessa `likes`-tauluun BigQuery Storage Write API:lla.
 
-Autentikaatio: ks. [Autentikaatio ja valtuutus](#autentikaatio-ja-valtuutus).
+Autentikaatio: ks. [Autentikaatio ja valtuutus — Gmail SSO](#gmail-sso-ja-kirjoituspalvelu-7-19).
 
 ### Tuetut aktiviteetit
 
@@ -349,7 +431,7 @@ Delete ei poista tietokannasta. `activities`-tauluun kirjataan `Delete`-tapahtum
 
 Käyttäjä voi päivittää **vain oman kommenttinsa** sisällön. Organisaatioiden julkaisemia objekteja (RSS, Ahjo, HRI, OG-scraped) ei voi päivittää `Update`-aktiviteetilla — ne ovat jobien omistamia.
 
-- `actor` validoidaan: `Update`-pyynnön `actor` täytyy vastata alkuperäisen `Create`-aktiviteetin `actor`-arvoa. Jos ne eivät täsmää, palautetaan `403 Forbidden`.
+- `actor` validoidaan: `Update`-pyynnön `actor`-IRI:n `sub`-osa täytyy vastata alkuperäisen `Create`-aktiviteetin `actor`-IRI:n `sub`-osaa. Jos ne eivät täsmää, palautetaan `403 Forbidden`.
 - `published` ei muutu — vain `object_json` ja `updated` päivittyvät.
 - `Update`-aktiviteetti kirjoitetaan `activities`-tauluun ja `objects.object_json` päivitetään MERGE-operaatiolla.
 - `thread_root`-artikkelin `updated` päivittyy muokatusta kommentista (ks. [Tykkäyslaskuri ja updated-aikaleima](#tykkäyslaskuri-ja-updated-aikaleima-1112)).
@@ -552,3 +634,4 @@ Jos MERGE-operaatio epäonnistuu: koko batch peruutetaan, `last_fetched_at` ei p
 - #16 Cloud Run ympäristömuuttujat
 - #17 Logging ja monitoring
 - #18 objects_pending-skeema
+- #19 Gmail SSO → IAM-rooli -mappaus kirjoituspalvelulle
