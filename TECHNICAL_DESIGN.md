@@ -73,14 +73,14 @@ Kirjoituspalvelu (#7) tukee loppukäyttäjien autentikointia Google-kirjautumise
 
 ```
 Selain
-  └─▶ Google Sign-In (OAuth2 / OIDC)
-        └─▶ id_token (JWT: sub, email, email_verified)
-              └─▶ POST /ap/activities
+  └▶ Google Sign-In (OAuth2 / OIDC)
+        └▶ id_token (JWT: sub, email, email_verified)
+              └▶ POST /ap/activities
                     Authorization: Bearer <id_token>
-                        └─▶ Cloud Run (write-api)
-                              └─▶ google-auth-library: verify_oauth2_token()
-                                    └─▶ email_verified = true?
-                                          └─▶ sub → actor-IRI → BigQuery
+                        └▶ Cloud Run (write-api)
+                              └▶ google-auth-library: verify_oauth2_token()
+                                    └▶ email_verified = true?
+                                          └▶ sub → actor-IRI → BigQuery
 ```
 
 #### Token-validointilogiikka
@@ -290,6 +290,57 @@ Ajastus: `0 * * * *` (kerran tunnissa). Virheenkäsittely: ks. [Virheenkäsittel
 
 **pubDate-vaatimus:** `<pubDate>` on pakollinen. Artikkeli jolta se puuttuu tai jota ei voi parsia ohitetaan ja merkitään lokiin. Syötteet joilta `<pubDate>` puuttuu rakenteellisesti käsitellään erillisessä prosessissa — ks. #14.
 
+**Autodiscovery-logiikka:** Koodi lukee autodiscovery-lähteiden URL:n aina `RSS_FEEDS`-listan `autodiscover_url`-kenttästä, ei kovakoodattuna. Tämä mahdollistaa uusien autodiscover-lähteiden lisäämisen pelkällä env-muuttujapäivityksellä ilman koodimuutoksia:
+
+```python
+def get_feed_url(feed: dict, bq_client) -> str | None:
+    """
+    Palauttaa RSS-URL:n: lukee config-taulusta jos autodiscover,
+    muuten käyttää staattista URL:a.
+    `feed`-dict on yksittäinen RSS_FEEDS-listan alkio.
+    """
+    if not feed.get("autodiscover"):
+        return feed["url"]
+
+    config_key = f"{feed['name']}.rss_url"  # esim. "valtioneuvosto.rss_url"
+    autodiscover_url = feed["autodiscover_url"]  # luettu RSS_FEEDS-listasta, ei kovakoodattu
+
+    # Yritetään ensin config-taulusta
+    row = bq_client.query(
+        "SELECT value FROM activitystreams.config WHERE key = @key LIMIT 1",
+        job_config=QueryJobConfig(query_parameters=[
+            ScalarQueryParameter("key", "STRING", config_key)
+        ])
+    ).result()
+    for r in row:
+        return r.value
+
+    # Ei löydy → autodiscovery
+    url = discover_feed_url(autodiscover_url)
+    if url:
+        bq_client.query("""
+            MERGE activitystreams.config T
+            USING (SELECT @key AS key, @url AS value) S ON T.key = S.key
+            WHEN MATCHED THEN
+                UPDATE SET T.value = S.value, T.updated_at = CURRENT_TIMESTAMP(), T.updated_by = 'rss-fetch-job'
+            WHEN NOT MATCHED THEN
+                INSERT (key, value, updated_at, updated_by)
+                VALUES (S.key, S.value, CURRENT_TIMESTAMP(), 'rss-fetch-job')
+        """,
+        job_config=QueryJobConfig(query_parameters=[
+            ScalarQueryParameter("key", "STRING", config_key),
+            ScalarQueryParameter("url", "STRING", url)
+        ])).result()
+    return url
+
+
+# Käyttö: iterointi RSS_FEEDS-listan yli
+for feed in rss_feeds:  # rss_feeds = json.loads(os.environ["RSS_FEEDS"])
+    url = get_feed_url(feed, bq_client)
+    if url:
+        process_feed(feed["name"], url)
+```
+
 **Tallennuslogiikka:** MERGE-operaatio `id`-kentän perusteella (ks. [`id`-kentän kaava](#id-kentän-kaava-lähteittäin)). `tags`-, `tags_enriched`- ja `like_count`-sarakkeet jätetään `WHEN MATCHED` -haaran ulkopuolelle — Voikko-job (#6) ja likes-and-updated-job (#11/#12) omistavat ne. `WHEN NOT MATCHED`: `tags = []`, `tags_enriched = FALSE`, `like_count = 0`.
 
 ```sql
@@ -352,7 +403,7 @@ Datasetit tallennetaan AS2 `Document`-objekteina, kategoriat `OrderedCollection`
 
 Ajastus: `30 * * * *` (30 min välein). Virheenkäsittely: ks. [Virheenkäsittely ja retry-logiikka](#virheenkäsittely-ja-retry-logiikka). Käsittelee erissä (100 kpl) objektit joilla `tags_enriched = FALSE`.
 
-**Analyysi:** `libvoikko` palauttaa sanan `BASEFORM`-lemman. Käytetyt sanaluokat: `nimisana`, `erisnimi`, `paikannimi`, `paikannimi_ulkomaat`, `teonsana`, `määrite`. Hylätään: `suhdesana`, `sidesana`, `kieltosana`, `asemosana`, `partikkeli`.
+**Analyysi:** `libvoikko` palauttaa sanan `BASEFORM`-lemman. Käytetyt sanaluokat: `nimisana`, `erisnimi`, `paikannimi`, `paikannimi_ulkomaat`, `teonsana`, `määrite`. Hyjätään: `suhdesana`, `sidesana`, `kieltosana`, `asemosana`, `partikkeli`.
 
 Top-16 yleisintä lemmaa tallennetaan `tags`-sarakkeeseen `MERGE UPDATE` -operaatiolla. Voikko-job on `tags`-sarakkeen ainoa kirjoittaja. Job asettaa aina `tags_enriched = TRUE` käsittelyn jälkeen — myös silloin kun tulos on tyhjä lista. Tämä estää rivin jäämisen ikuiseen uudelleenkäsittelysilmukkaan.
 
@@ -387,7 +438,7 @@ Endpoint on julkinen (ks. [Autentikaatio ja valtuutus](#autentikaatio-ja-valtuut
 | `published` | `article:published_time` | Scrape-hetki |
 | `updated` | `article:modified_time` | Scrape-hetki |
 
-`published` käyttää scrape-hetkeä fallbackina (toisin kuin RSS-job, joka ohittaa artikkelin). Tämä on hyväksyttävää koska OG-scraper on käyttäjän manuaalisesti käynnistämä toiminto.
+`published` käyttää scrape-hetkeä fallbackina (toisin kuin RSS-job, joka ohittaa artikkelin). Tämä on hyväksyttyä koska OG-scraper on käyttäjän manuaalisesti käynnistämä toiminto.
 
 ---
 
@@ -488,7 +539,7 @@ ORDER BY
 
 ### `totalItems`-caching
 
-`COUNT(*)`-kysely cachetetaan Cloud Run -muistissa 5 minuutiksi tag-kombinaatiota kohden. Cache on instanssikohtainen — `totalItems` on approksimatiivinen arvo. Caching vähentää merkittävästi BigQuery-kustannuksia: COUNT(*) ei aja per pyyntö, vain 5 minuutin välein.
+`COUNT(*)`-kysely cachetetaan Cloud Run -muistissa 5 minuutiksi tag-kombinaatiota kohden. Cache on instanssikohtainen — `totalItems` on approksimatiivinen arvo. Caching vähentää merkittävästi BigQuery-kustannuksia: COUNT(*) ei aja per pyynto, vain 5 minuutin välein.
 
 ---
 
@@ -570,7 +621,7 @@ RSS-syötteet joilta `<pubDate>` puuttuu rakenteellisesti jäävät nykyisellä 
 1. RSS-job tallentaa nämä artikkelit väliaikaiseen varastoon (`activitystreams.objects_pending`)
 2. Erillinen rikastusjob hakee `published`-arvon muista lähteistä: OG-scraper (#8), HTTP `Last-Modified`, JSON-LD `datePublished`
 3. Kun `published` on selvitetty, artikkeli siirretään normaaliin `objects`-tauluun
-4. Jos `published` ei selviä 7 päivässä, artikkeli hävitetään välivarastosta
+4. Jos `published` ei selviy 7 päivässä, artikkeli hävitetään välivarastosta
 
 Prioriteetti: **matala** — toteutetaan vasta kun jokin RSS-lähde oikeasti aiheuttaa ongelman. Skeema: ks. #18.
 
@@ -582,7 +633,7 @@ Kaikissa Cloud Run Job -ajoissa noudatetaan yhtenäistä virheenkäsittelymallia
 
 ### `last_fetched_at` — päivitetään vain onnistuneesta ajosta
 
-`config`-taulun `last_fetched_at`-arvo päivitetään **ainoastaan kun koko ajo on suoritettu onnistuneesti**. Epäonnistunut ajo ei päivitä arvoa — seuraava ajo käyttää edellistä onnistunutta ajankohtaa fetch-ikkunana, jolloin yksikään artikkeli ei jää väliin.
+`config`-taulun `last_fetched_at`-arvo päivitetään **ainoastaan kun koko ajo on suoritettu onnistuneesti**. Epäonnistunut ajo ei päivitä arvoa — seuraava ajo käyttää edellistä onnistunutta ajankohtaa fetch-ikkunana, jolloin yksikään artikkeli ei jää välistä.
 
 ### Retry-strategia HTTP-virheille
 
@@ -591,7 +642,7 @@ Kaikissa Cloud Run Job -ajoissa noudatetaan yhtenäistä virheenkäsittelymallia
 | `2xx` | Jatketaan normaalisti |
 | `429 Too Many Requests` | Odotetaan `Retry-After`-otsakkeen mukainen aika (tai 60 s), max 3 yritystä |
 | `5xx` | Eksponentiaalinen backoff: 30 s, 5 min, 15 min. Max 3 yritystä. |
-| `404 Not Found` | Kirjataan lokiin, jatketaan muiden lähteiden käsittelyä. Ei retrytä. |
+| `404 Not Found` | Kirjataan lokiin, jatketaan muiden lähteiden käsittelyä. Ei retryä. |
 | Connection error / timeout | Sama kuin `5xx`. |
 
 RSS-job ei kaada koko ajoa yksittäisen lähteen virheestä — virhe kirjataan lokiin, ajo jatkuu seuraavaan lähteeseen.
@@ -606,11 +657,11 @@ Jos MERGE-operaatio epäonnistuu: koko batch peruutetaan, `last_fetched_at` ei p
 
 | Resurssi | Arvio | Hinta |
 |---|---|---|
-| BigQuery kyselyt (100k riviä, n=500) | ~110 MB/pyyntö | ~$0.0007/pyyntö |
-| Ilmainen 1 TB/kk -kiintiö | ~9 000 pyyntöä 100k rivillä | $0/kk |
-| `totalItems` COUNT(*) | Cachetettu 5 min — ei aja per pyyntö | Merkittävä säästö |
+| BigQuery kyselyt (100k riviä, n=500) | ~110 MB/pyynto | ~$0.0007/pyynto |
+| Ilmainen 1 TB/kk -kiintiö | ~9 000 pyyntoa 100k riville | $0/kk |
+| `totalItems` COUNT(*) | Cachetettu 5 min — ei aja per pyynto | Merkittävä säästö |
 | Cloud Run Job -suoritukset | <30s/ajo | $0/kk (ilmainen taso) |
-| Cloud Run palvelu | ~1000 pyyntöä/kk | $0/kk (ilmainen taso) |
+| Cloud Run palvelu | ~1000 pyyntoa/kk | $0/kk (ilmainen taso) |
 
 ---
 
