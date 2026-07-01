@@ -32,7 +32,7 @@ Kirjoittajat per taulu:
 | Muuttuja | Arvo |
 |---|---|
 | **Domain** | `activitystreams.uutisseuranta.net` |
-| **GCP-projekti** | `activitystreams` |
+| **GCP-projekti** | `uutisseuranta-activitystreams` |
 | **BigQuery dataset** | `activitystreams` |
 | **Sijainti** | `europe-north1` |
 | **GitHub-repo** | `uutisseuranta/gcs-activitystreams` |
@@ -76,17 +76,17 @@ CREATE TABLE activitystreams.objects (
   source          STRING    NOT NULL OPTIONS(description='Lähde: rss | ahjo | hri | scraped | user'),
   published       TIMESTAMP NOT NULL OPTIONS(description='AS2 published – pakollinen, taulu on partitionoitu tämän mukaan'),
   updated         TIMESTAMP          OPTIONS(description='AS2 updated – päivittyy käyttäjäaktiivisuudesta (#12)'),
-  tags            STRING    REPEATED OPTIONS(description='Lemmatisoidut tagit (Voikko #6)'),
-  tags_enriched   BOOL      NOT NULL DEFAULT FALSE
-                             OPTIONS(description='TRUE kun Voikko-job on käsitellyt rivin — estää ikuisen uudelleenkäsittelysilmukan tyhjän tuloksen tapauksessa'),
-  like_count      INT64     NOT NULL DEFAULT 0
-                             OPTIONS(description='Tykkäysmäärä activitystreams.likes-taulusta, päivitetään likes-and-updated-jobilla (#11/#12)'),
-  deleted         BOOL      NOT NULL DEFAULT FALSE,
+  tags            ARRAY<STRING>      OPTIONS(description='Lemmatisoidut tagit (Voikko #6)'),
+  tags_enriched   BOOL      NOT NULL OPTIONS(description='TRUE kun Voikko-job on käsitellyt rivin — estää ikuisen uudelleenkäsittelysilmukan tyhjän tuloksen tapauksessa'),
+  like_count      INT64     NOT NULL OPTIONS(description='Tykkäysmäärä activitystreams.likes-taulusta, päivitetään likes-and-updated-jobilla (#11/#12)'),
+  deleted         BOOL      NOT NULL OPTIONS(description='Pehmeä poisto'),
   object_json     JSON               OPTIONS(description='Koko AS2-objekti natiivina JSON-tyypinä')
 )
 PARTITION BY DATE(published)
 CLUSTER BY source, published;
 ```
+
+> **Oletusarvot:** `tags_enriched=FALSE`, `like_count=0`, `deleted=FALSE` asetetaan INSERT-lauseissa, ei DDL:ssä. BigQuery CREATE TABLE ei tue DEFAULT-lausekkeita.
 
 > **Miksi `published` on NOT NULL?**
 > Taulu on partitionoitu `DATE(published)`-sarakkeen mukaan. Ilman `published`-arvoa rivi ei partitionoidu oikein ja queryt hidastuvat merkittävästi. RSS-job ohittaa artikkelit joilta `<pubDate>` puuttuu (ks. #2). OG-scraper tallentaa `published = scrape-hetki` fallbackina. Poikkeustapaukset käsitellään erillisessä prosessissa (#14).
