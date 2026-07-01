@@ -110,9 +110,9 @@ Aikajärjestystä ei käytetä pääjärjestyksenä, koska saman aiheen uutiset 
 Client pyytää aina alusta `n` kappaletta. Ei kursoreja, ei sivunumeroita. Client huolehtii itse duplikaattisuodatuksesta `id`-kentän perusteella — jos client haluaa enemmän tuloksia, se pyytää suuremmalla `n`:llä.
 
 ```
-GET /ap/outbox?tag=asuminen&n=50    → top-50
-GET /ap/outbox?tag=asuminen&n=100   → top-100 (sisältää edellisen 50, client suodattaa)
-GET /ap/outbox?tag=asuminen&n=150   → top-150
+GET /ap/outbox?tag=asuminen&n=5    → top-5
+GET /ap/outbox?tag=asuminen&n=50   → top-50 (sisältää edellisen 5, client suodattaa)
+GET /ap/outbox?tag=asuminen&n=500   → top-500 (tämä on maksimi, sen jälkeen käyttäjälle näytetään tagipilvi mistä voi lähteä pureutumaan. Client tekee haun sillä tägillä.)
 ```
 
 `OrderedCollectionPage`-tasoa ei tarvita — pelkkä `OrderedCollection` riittää.
