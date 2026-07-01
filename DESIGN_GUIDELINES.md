@@ -4,11 +4,11 @@ Nämä periaatteet ohjaavat kaikkia arkkitehtuuripäätöksiä. Viittaa tähän 
 
 ---
 
-## Asiat riitelevät, ei ihmiset
+## Asiat riitelevat, ei ihmiset
 
 Tässä palvelussa sisältö on toimijana, ei henkilö.
 
-AS2-spesifikaatio tukee `actor`-kentässä `Person`-tyyppiä, mutta tässä projektissa actoreita ei käytetä käyttäjäidentiteetteinä. Kaikki `actor`-arvot ovat joko:
+AS2-spesifikaatio tukee `actor`-kentässä `Person`-tyypppiä, mutta tässä projektissa actoreita ei käytetä käyttäjäidentiteetteinä. Kaikki `actor`-arvot ovat joko:
 
 - `Organization` — julkaisija (Helsingin Sanomat, Helsingin kaupunki, HRI)
 - `Service` — automaattipalvelu (Voikko-enrichment, RSS-jobi, OG-scraper)
@@ -19,23 +19,23 @@ AS2-spesifikaatio tukee `actor`-kentässä `Person`-tyyppiä, mutta tässä proj
 
 ---
 
-## Ei `Dislike`, ei `Undo`
+## Ei `Dislike`, ei `Undo`, ei `Announce`
 
-Kun asiat riitelevät eikä ihmiset, ei ole tarvetta osoittaa epämieltymystä muita ihmisiä kohtaan. `Like` on sisällön kiinnostavuuden mittari, ei sosiaalisen hyväksynnän signaali.
+Kun asiat riitelevat eikä ihmiset, ei ole tarvetta osoittaa epämieltymystä muita ihmisiä kohtaan. `Like` on sisällön kiinnostavuuden mittari, ei sosiaalisen hyväksynnän signaali.
 
 | Aktiviteetti | Tila | Perustelu |
 |---|---|---|
 | `Like` | ✅ Toteutetaan | Käyttäjä merkitsee artikkelin/asian kiinnostavaksi |
 | `Dislike` | ❌ Ei toteuteta | Ei tarvetta sosiaaliselle epämieltymykselle |
 | `Undo Like` | ❌ Ei toteuteta | Like-laskuri voi vain kasvaa |
+| `Announce` | ❌ Ei toteuteta | Käyttäjä julkaisee sisältöä `Create`-aktiviteetilla, ei uudelleenjakamisella |
 | `Delete` | ✅ Toteutetaan | Käyttäjä voi poistaa oman kommenttinsa tai artikkelinsa |
-| `Announce` | ❌ Ei toteuteta | Käyttäjä julkaisee sisällön `Create`-aktiviteetilla, ei uudelleenjakaa |
 
 ---
 
 ## `published` = alkuperäinen julkaisuhetki julkaisijan palvelussa
 
-AS2-speksin mukaan `published` on objektin luontihetki ja `updated` on muokkaushetki. `published` ei koskaan muutu objektin päivityksissä — se on historiallinen tosiasia.
+AS2-speksin mukaan `published` on objektin luontihetki ja `updated` on muokkaushetki. `published` ei koskaan muutu objektin päivityksisä — se on historiallinen tosiasia.
 
 | Lähde | `published` | `updated` |
 |---|---|---|
@@ -43,7 +43,7 @@ AS2-speksin mukaan `published` on objektin luontihetki ja `updated` on muokkaush
 | OpenAhjo-päätös | Päätöksen alkuperäinen julkaisupäivä julkaisijan sivuilla | `metadata_modified` jos muuttunut |
 | HRI-datasetti | `metadata_created` CKAN-vastauksessa | `metadata_modified` |
 | OG-scrapattu sivu | `article:published_time` OG-tagista | `article:modified_time` |
-| Fallback (ei metatietoa) | Scrape-hetki — merkitään epätarkkuudeksi lokiin | — |
+| Fallback (ei metatietoa) | Scrape-hetki — merkitaan epätarkkuudeksi lokiin | — |
 
 ---
 
@@ -67,11 +67,38 @@ Vastaukseen ei voi vastata. Kirjoituspalvelu hylkää yrityksen `400 Bad Request
 
 ---
 
+## Tykkäyslaskuri: `likes:N`-tagi
+
+Tykkäysmäärä julkaistaan objektin `tags`-taulukossa tagina muotoa `likes:N`. Tagi on **anonyymi** — se kertoo vain lukumäärän, ei kuka on tykkännyt. Laskentajob päivittää tagin säännöllisesti sosiaalisesta BigQuerystä avoimen datan BigQueryyn.
+
+- Laskuri voi vain **kasvaa** — `Undo Like` ei ole mahdollinen
+- Tieto siitä kuka on tykkännyt ei koskaan siirry avoimeen dataan
+- Yksi `likes:`-tagi per objekti — päivitys korvaa edellisen
+
+```
+tags: ["asuminen", "helsinki", "päätös", "likes:42"]
+```
+
+---
+
+## Ei `source`-parametria
+
+Client ei päätä mistä lähteestä dataa haetaan — vain tagit ratkaisevat. `source`-kenttää ei ole dokumenttirakenteessa eikä query-parametreissa.
+
+```
+✓ GET /ap/outbox?tag=asuminen&tag=helsinki
+✗ GET /ap/outbox?tag=asuminen&source=ahjo   ← 400 Bad Request
+```
+
+Lähde (RSS, Ahjo, HRI, OG-scrape) on sisäinen toteutusyksityiskohta, ei julkinen filtteri.
+
+---
+
 ## Outbox-sivutus: tagirelevanssi, ei kursoreja
 
 ### Järjestys
 
-Outbox palauttaa objektit **tagirelevanssijärjestyksessä**, ei aikajärjestyksessä. Relevanssi on yksinkertainen osumien laskenta: kuinka monta clientin pyytämistä tageista löytyy objektin `tag`-kentästä. Tasatilanteessa järjestetään `like_count DESC, updated DESC, published DESC, id ASC`.
+Outbox palauttaa objektit **tagirelevanssijärjestyksessä**, ei aikajärjestyksessä. Relevanssi on yksinkertainen osumien laskenta: kuinka monta clientin pyytämistä tageista löytyy objektin `tags`-kentästä. Tasatilanteessa järjestetään `likes_count DESC, updated DESC, published DESC, id ASC` missä `likes_count` luetaan `likes:N`-tagista.
 
 Aikajärjestystä ei käytetä pääjärjestyksenä, koska saman aiheen uutiset eri lähteistä ovat tasavertaisia riippumatta siitä, kuka julkaisi ensin.
 
@@ -117,3 +144,4 @@ Ei `next`, ei `prev`, ei `cursor`, ei `first`. `totalItems` kertoo clientille pa
 
 - Kaikki muut tiketit — nämä periaatteet ohjaavat kaikkia arkkitehtuuripäätöksiä
 - #10 Outbox-endpoint
+- #11 Tykkäyslaskuri (`likes:N`-tagi)
