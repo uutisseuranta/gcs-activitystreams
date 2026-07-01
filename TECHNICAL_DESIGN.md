@@ -17,7 +17,7 @@ Kirjoittajat per taulu:
   activitystreams.objects    ← jobit #2 (RSS), #3 (Ahjo), #4 (HRI), #8 (OG-scraper)
                                 suora MERGE-kirjoitus, tavallinen taulu
                                 tags-sarakkeen omistaja: Voikko-job (#6)
-                                like_count-sarakkeen omistaja: likes-sync-job (#11)
+                                like_count-sarakkeen omistaja: likes-and-updated-job (#11/#12)
 
   activitystreams.activities ← kirjoituspalvelu (#7): käyttäjätoiminnot
                                 (kommentit, tykkäykset, käyttäjän luomat objektit)
@@ -45,8 +45,9 @@ Kirjoittajat per taulu:
 | `ahjo-fetch-job` | `0 3 * * *` | 06:00 |
 | `hri-fetch-job` | `30 3 * * *` | 06:30 |
 | `voikko-enrich-job` | `30 * * * *` | 30 min välein |
-| `likes-sync-job` | `*/15 * * * *` | 15 min välein |
-| `activity-updated-job` | `*/15 * * * *` | 15 min välein |
+| `likes-and-updated-job` | `*/15 * * * *` | 15 min välein |
+
+Huom: `likes-and-updated-job` korvaa aiemmat erilliset `likes-sync-job` ja `activity-updated-job` -ajastukset. Molemmat laskennat ajetaan samassa Cloud Run Job -suorituksessa — ks. [Tykkäyslaskuri ja updated-aikaleima](#tykkäyslaskuri-ja-updated-aikaleima-1112).
 
 ---
 
@@ -62,7 +63,7 @@ CREATE TABLE activitystreams.objects (
   updated      TIMESTAMP          OPTIONS(description='AS2 updated – päivittyy käyttäjäaktiivisuudesta (#12)'),
   tags         STRING    REPEATED OPTIONS(description='Lemmatisoidut tagit (Voikko #6)'),
   like_count   INT64     NOT NULL DEFAULT 0
-                         OPTIONS(description='Tykkäysmäärä activitystreams.likes-taulusta, päivitetään likes-sync-jobilla (#11)'),
+                         OPTIONS(description='Tykkäysmäärä activitystreams.likes-taulusta, päivitetään likes-and-updated-jobilla (#11/#12)'),
   deleted      BOOL      NOT NULL DEFAULT FALSE,
   object_json  JSON               OPTIONS(description='Koko AS2-objekti natiivina JSON-tyypinä')
 )
@@ -108,21 +109,39 @@ CLUSTER BY object_id, actor;
 
 ### `activitystreams.config` — dynaaminen konfiguraatio
 
+Config-taulu on kriittinen komponentti: RSS-, Ahjo- ja HRI-jobien fetch-ikkunan jatkuvuus riippuu siitä kokonaan. Ilman oikeaa `last_fetched_at`-arvoa job joko hakee kaksoiskappaleet tai jättää aukon dataan.
+
 ```sql
 CREATE TABLE activitystreams.config (
   key           STRING    NOT NULL,
   value         STRING    NOT NULL,
   updated_at    TIMESTAMP NOT NULL,
-  updated_by    STRING
+  updated_by    STRING    OPTIONS(description='Cloud Run Job -palvelun nimi, esim. rss-fetch-job')
 );
 ```
 
-| key | Kuvaus |
+#### Kaikki avain-arvo-parit
+
+| key | Arvomuoto | Kirjoittaa | Milloin |
+|---|---|---|---|
+| `rss.{source}.last_fetched_at` | ISO 8601 timestamp | `rss-fetch-job` | Onnistuneen ajon lopussa |
+| `ahjo.last_fetched_at` | ISO 8601 timestamp | `ahjo-fetch-job` | Onnistuneen ajon lopussa |
+| `hri.last_fetched_at` | ISO 8601 timestamp | `hri-fetch-job` | Onnistuneen ajon lopussa |
+| `valtioneuvosto.rss_url` | URL-merkkijono | `rss-fetch-job` | Kun autodiscovery löytää uuden URL:n |
+
+**Lukuoikeudet:** Kaikilla fetch-jobeilla on `roles/bigquery.dataViewer` config-tauluun.
+
+**Kirjoitusoikeudet:** Jokainen job kirjoittaa vain omia avaimiaan. Oikeus: `roles/bigquery.dataEditor` (tai hienojakoisempi rivi-tason käytäntö tarvittaessa).
+
+#### Cold start — mitä tapahtuu kun avain puuttuu
+
+| Tilanne | Käyttäytyminen |
 |---|---|
-| `valtioneuvosto.rss_url` | RSS-URL löydetty autodiscoveryllä |
-| `rss.{source}.last_fetched_at` | RSS-jobin viimeisin onnistunut ajo per lähde |
-| `ahjo.last_fetched_at` | Ahjo-jobin viimeisin onnistunut ajo |
-| `hri.last_fetched_at` | HRI-jobin viimeisin onnistunut ajo |
+| `last_fetched_at` puuttuu (ensimmäinen ajo) | Job hakee kiinteältä fallback-aikaikkunalta (esim. `-24h`) ja kirjoittaa arvon config-tauluun onnistuneen ajon jälkeen |
+| `valtioneuvosto.rss_url` puuttuu | `rss-fetch-job` ajaa autodiscoveryn, tallentaa löydetyn URL:n ja jatkaa normaalisti |
+| config-taulu on kokonaan tyhjä | Kaikki jobit käyttävät omaa fallback-ikkunaansa — data ei katkea, mutta ensimmäinen ajo saattaa hakea päällekkäistä dataa |
+
+Config-taulun rivejä ei koskaan poisteta — vain päivitetään (`MERGE UPDATE`). Tämä varmistaa että avain on aina olemassa toisen ajon jälkeen.
 
 ### `id`-kentän kaava lähteittäin
 
@@ -171,7 +190,7 @@ Ajastus: `0 * * * *` (kerran tunnissa).
 
 **pubDate-vaatimus:** `<pubDate>` on pakollinen. Artikkeli jolta se puuttuu tai jota ei voi parsia ohitetaan ja merkitään lokiin. Syötteet joilta `<pubDate>` puuttuu rakenteellisesti käsitellään erillisessä prosessissa — ks. #14.
 
-**Tallennuslogiikka:** MERGE-operaatio `id`-kentän perusteella. `tags`- ja `like_count`-sarakkeet jätetään `WHEN MATCHED` -haaran ulkopuolelle — Voikko-job (#6) ja likes-sync-job (#11) omistavat ne. `WHEN NOT MATCHED`: `tags = []`, `like_count = 0`.
+**Tallennuslogiikka:** MERGE-operaatio `id`-kentän perusteella. `tags`- ja `like_count`-sarakkeet jätetään `WHEN MATCHED` -haaran ulkopuolelle — Voikko-job (#6) ja likes-and-updated-job (#11/#12) omistavat ne. `WHEN NOT MATCHED`: `tags = []`, `like_count = 0`.
 
 ```sql
 MERGE activitystreams.objects T
@@ -243,6 +262,8 @@ Top-16 yleisintä lemmaa tallennetaan `tags`-sarakkeeseen `MERGE UPDATE` -operaa
 
 `POST /ap/scrape { "url": "https://..." }` — palauttaa AS2 `Article`-objektin ja tallentaa sen `objects`-tauluun.
 
+Endpoint on avointa dataa: autentikointia ei vaadita, samoin kuin RSS-syötteetkin ovat julkista tietoa. Kirjoitusoikeus BigQueryyn on Cloud Run -palvelun palvelutilillä IAM-oikeuksilla.
+
 **Kenttäkartoitus:**
 
 | AS2-kenttä | OG-lähde | Fallback |
@@ -260,6 +281,8 @@ Top-16 yleisintä lemmaa tallennetaan `tags`-sarakkeeseen `MERGE UPDATE` -operaa
 ## Cloud Run: kirjoituspalvelu (#7)
 
 Vastaanottaa AS2-aktiviteetteja JSON:na. Validoi tyypin ja pakolliset kentät. Kirjoittaa `activities`- ja tarvittaessa `likes`-tauluun BigQuery Storage Write API:lla.
+
+**Autentikointi:** Kirjoituspalvelu on suojattu Cloud IAM:lla. Ainoastaan palvelutilillä (`roles/run.invoker`) on oikeus kutsua endpointia. Outbox (`GET /ap/outbox`) ja scraper (`POST /ap/scrape`) ovat julkisia — data on avointa kuten RSS.
 
 ### Tuetut aktiviteetit
 
@@ -338,7 +361,6 @@ ORDER BY
 |---|---|---|---|
 | `tag` | Toistuva. Pakollinen — `400` jos puuttuu. | — | — |
 | `n` | Palautettavien määrä. Yli 500 → `400`. | 50 | 500 |
-| `after` | ISO 8601. Aktivoi partition-karsintaa. | — | — |
 
 ### `totalItems`-caching
 
@@ -346,9 +368,13 @@ ORDER BY
 
 ---
 
-## Tykkäyslaskuri: `like_count`-sarake (#11)
+## Tykkäyslaskuri ja updated-aikaleima (#11/#12)
 
-`like_count INT64 NOT NULL DEFAULT 0` on suoraan `activitystreams.objects`-taulussa. Laskentajob (15 min välein) laskee tykkäysmäärät `activitystreams.likes`-taulusta ja päivittää sarakkeen MERGE-operaatiolla.
+`likes-and-updated-job` ajaa 15 minuutin välein kaksi laskentaa peräkkäin samassa Cloud Run Job -suorituksessa. Nämä olivat aiemmin erilliset jobit; ne on yhdistetty koska molemmat kirjoittavat samaan `objects`-tauluun samalla 15 min rytmillä.
+
+### Vaihe 1: like_count-päivitys
+
+`like_count INT64 NOT NULL DEFAULT 0` on suoraan `activitystreams.objects`-taulussa.
 
 ```sql
 MERGE activitystreams.objects T
@@ -365,24 +391,7 @@ WHEN MATCHED AND T.deleted = FALSE
 - Laskuri on anonyymi — ei tietoa kuka tykkäsi
 - `deleted = FALSE` -ehto estää poistettujen objektien päivittymisen
 
-### `likes`-kenttä AS2-vastauksessa
-
-Query-API upottaa `like_count`-arvon palautushetkellä suoraan AS2-objektiin:
-
-```json
-{
-  "type": "Article",
-  "id": "https://activitystreams.uutisseuranta.net/ap/objects/articles/hs/abc123",
-  "name": "Artikkelin otsikko",
-  "likes": 42
-}
-```
-
-`object_json`-sarakkeeseen ei tallenneta `likes`-kenttää pysyvästi — se lasketaan lennossa.
-
----
-
-## `updated`-aikaleima ja relevanssijärjestys (#12)
+### Vaihe 2: updated-aikaleiman päivitys
 
 Kun artikkeliin kohdistuu käyttäjäaktiivisuutta, **thread_root-artikkelin** `updated` päivittyy:
 
@@ -405,6 +414,21 @@ GROUP BY root_url
 `COALESCE(thread_root, object_id)` varmistaa että artikkeliin suoraan kohdistuvat tykkäykset (joilla `thread_root = NULL`) käsitellään oikein. `updated` ei koskaan kulje taaksepäin (`AND @last_activity_at > updated`).
 
 Avoimen datan BigQueryyn kirjoitetaan vain aikaleima — ei tietoa kuka kommentoi tai tykkäsi.
+
+### `likes`-kenttä AS2-vastauksessa
+
+Query-API upottaa `like_count`-arvon palautushetkellä suoraan AS2-objektiin:
+
+```json
+{
+  "type": "Article",
+  "id": "https://activitystreams.uutisseuranta.net/ap/objects/articles/hs/abc123",
+  "name": "Artikkelin otsikko",
+  "likes": 42
+}
+```
+
+`object_json`-sarakkeeseen ei tallenneta `likes`-kenttää pysyvästi — se lasketaan lennossa.
 
 ---
 
@@ -455,8 +479,6 @@ Jos MERGE-operaatio epäonnistuu: koko batch peruutetaan, `last_fetched_at` ei p
 | Ilmainen 1 TB/kk -kiintiö | ~9 000 pyyntöä 100k rivillä | $0/kk |
 | Cloud Run Job -suoritukset | <30s/ajo | $0/kk (ilmainen taso) |
 | Cloud Run palvelu | ~1000 pyyntöä/kk | $0/kk (ilmainen taso) |
-
-`after`-parametri aktivoi BigQueryn partitiokarsintaa ja voi leikata skannatun datan murto-osaan.
 
 ---
 
