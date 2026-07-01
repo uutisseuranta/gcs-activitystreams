@@ -67,6 +67,45 @@ Vastaukseen ei voi vastata. Kirjoituspalvelu hylkää yrityksen `400 Bad Request
 
 ---
 
+## Outbox-sivutus: tagirelevanssi + opaakki kursori
+
+### Järjestys
+
+Outbox-sivu palauttaa objektit **tagirelevanssijärjestyksessä**, ei aikajärjestyksessä. Relevanssi on yksinkertainen osumien laskenta: kuinka monta clientin pyytämistä tageista löytyy objektin `tag`-kentästä. Tasatilanteessa järjestetään `published DESC, id ASC`.
+
+Aikajärjestystä ei käytetä pääjärjestyksenä, koska saman aiheen uutiset eri lähteistä ovat tasavertaisia riippumatta siitä, kuka julkaisi ensin.
+
+### Kursori
+
+Koska järjestys ei perustu aikaleimaan, sivutuskursorina käytetään **opaakkia `cursor`-parametria**. Client ei koskaan muodosta kursoria itse eikä pure sen sisältöä — palvelin kirjoittaa sen `next`-linkkiin ja lukee sen seuraavalla pyynnöllä.
+
+Kursori on base64url-enkoodattu offset-arvo. Tämä on luotettava BigQuery-toteutuksessa kunhan `ORDER BY` on deterministinen (relevanssi DESC, published DESC, id ASC) eikä muutu sivujen välillä.
+
+```
+cursor = base64url({ "offset": 50 })
+```
+
+### AS2-rakenne
+
+`GET /ap/outbox` ilman sivutusparametreja palauttaa `OrderedCollection`-kokoelman kuvauksen: vain `totalItems` ja `first`-linkki. Varsinaisia objekteja ei palauteta.
+
+`GET /ap/outbox?n=50` ja seuraavat `next`-linkit palauttavat `OrderedCollectionPage`-sivun.
+
+Sivutus on **yksisuuntainen** (uusimmasta/relevanteimmasta alaspäin). `prev` on aina `null`. Alkuun palataan `first`-linkin kautta.
+
+### Query-parametrit
+
+| Parametri | Kuka asettaa | Kuvaus |
+|---|---|---|
+| `tag` | Client | Yksi tai useampi tagi (toistuva). `tag=asuminen&tag=helsinki` |
+| `n` | Client | Sivun koko. Palvelin käyttää 50 oletuksena jos puuttuu. |
+| `cursor` | Palvelin | Opaakki. Kirjoitetaan `next`-linkkiin. Client ei aseta tätä. |
+| `after` | Client | Valinnainen aikaikkuna: vain tämän jälkeen julkaistut. |
+
+`source`-parametria ei ole: client ei päätä mistä lähteestä dataa haetaan, vain mitä tageja seurataan.
+
+---
+
 ## Liittyy
 
 - Kaikki muut tiketit — nämä periaatteet ohjaavat kaikkia arkkitehtuuripäätöksiä
