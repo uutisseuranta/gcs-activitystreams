@@ -51,21 +51,35 @@ Huom: `likes-and-updated-job` korvaa aiemmat erilliset `likes-sync-job` ja `acti
 
 ---
 
+## Autentikaatio ja valtuutus
+
+| Palvelu | Autentikaatio | Perustelu |
+|---|---|---|
+| `GET /ap/outbox` | Julkinen, ei autentikointia | Avoin data — sama periaate kuin RSS-syötteet |
+| `POST /ap/scrape` | Julkinen, ei autentikointia | Avoin data — käyttäjä osoittaa julkisen URL:n scrapattavaksi |
+| `POST /ap/activities` | Cloud IAM `roles/run.invoker` | Kirjoitusoperaatio — vain valtuutetut palvelutilit voivat kutsua |
+
+Kaikki kolme palvelua ovat erillisiä Cloud Run -palveluja. `og-scraper` on julkinen kirjoitusendpoint (tallentaa BigQueryyn), mutta koska data on avointa eikä käyttäjäkohtaista, autentikointia ei vaadita — kirjoitusoikeus BigQueryyn on Cloud Run -palvelun palvelutilillä IAM-oikeuksilla, ei kutsujalla.
+
+---
+
 ## BigQuery-skeema (#1)
 
 ### `activitystreams.objects` — artikkelit, päätökset, datasetit
 
 ```sql
 CREATE TABLE activitystreams.objects (
-  id           STRING    NOT NULL OPTIONS(description='AS2 id – domain-pohjainen IRI, primääriavain'),
-  source       STRING    NOT NULL OPTIONS(description='Lähde: rss | ahjo | hri | scraped | user'),
-  published    TIMESTAMP NOT NULL OPTIONS(description='AS2 published – pakollinen, taulu on partitionoitu tämän mukaan'),
-  updated      TIMESTAMP          OPTIONS(description='AS2 updated – päivittyy käyttäjäaktiivisuudesta (#12)'),
-  tags         STRING    REPEATED OPTIONS(description='Lemmatisoidut tagit (Voikko #6)'),
-  like_count   INT64     NOT NULL DEFAULT 0
-                         OPTIONS(description='Tykkäysmäärä activitystreams.likes-taulusta, päivitetään likes-and-updated-jobilla (#11/#12)'),
-  deleted      BOOL      NOT NULL DEFAULT FALSE,
-  object_json  JSON               OPTIONS(description='Koko AS2-objekti natiivina JSON-tyypinä')
+  id              STRING    NOT NULL OPTIONS(description='AS2 id – domain-pohjainen IRI, primääriavain'),
+  source          STRING    NOT NULL OPTIONS(description='Lähde: rss | ahjo | hri | scraped | user'),
+  published       TIMESTAMP NOT NULL OPTIONS(description='AS2 published – pakollinen, taulu on partitionoitu tämän mukaan'),
+  updated         TIMESTAMP          OPTIONS(description='AS2 updated – päivittyy käyttäjäaktiivisuudesta (#12)'),
+  tags            STRING    REPEATED OPTIONS(description='Lemmatisoidut tagit (Voikko #6)'),
+  tags_enriched   BOOL      NOT NULL DEFAULT FALSE
+                             OPTIONS(description='TRUE kun Voikko-job on käsitellyt rivin — estää ikuisen uudelleenkäsittelysilmukan tyhjän tuloksen tapauksessa'),
+  like_count      INT64     NOT NULL DEFAULT 0
+                             OPTIONS(description='Tykkäysmäärä activitystreams.likes-taulusta, päivitetään likes-and-updated-jobilla (#11/#12)'),
+  deleted         BOOL      NOT NULL DEFAULT FALSE,
+  object_json     JSON               OPTIONS(description='Koko AS2-objekti natiivina JSON-tyypinä')
 )
 PARTITION BY DATE(published)
 CLUSTER BY source, published;
@@ -175,7 +189,7 @@ Config-taulun rivejä ei koskaan poisteta — vain päivitetään (`MERGE UPDATE
 
 ## Cloud Run Job: RSS-syötteet (#2)
 
-Ajastus: `0 * * * *` (kerran tunnissa).
+Ajastus: `0 * * * *` (kerran tunnissa). Virheenkäsittely: ks. [Virheenkäsittely ja retry-logiikka](#virheenkäsittely-ja-retry-logiikka).
 
 **Lähteet:**
 
@@ -190,7 +204,7 @@ Ajastus: `0 * * * *` (kerran tunnissa).
 
 **pubDate-vaatimus:** `<pubDate>` on pakollinen. Artikkeli jolta se puuttuu tai jota ei voi parsia ohitetaan ja merkitään lokiin. Syötteet joilta `<pubDate>` puuttuu rakenteellisesti käsitellään erillisessä prosessissa — ks. #14.
 
-**Tallennuslogiikka:** MERGE-operaatio `id`-kentän perusteella. `tags`- ja `like_count`-sarakkeet jätetään `WHEN MATCHED` -haaran ulkopuolelle — Voikko-job (#6) ja likes-and-updated-job (#11/#12) omistavat ne. `WHEN NOT MATCHED`: `tags = []`, `like_count = 0`.
+**Tallennuslogiikka:** MERGE-operaatio `id`-kentän perusteella (ks. [`id`-kentän kaava](#id-kentän-kaava-lähteittäin)). `tags`-, `tags_enriched`- ja `like_count`-sarakkeet jätetään `WHEN MATCHED` -haaran ulkopuolelle — Voikko-job (#6) ja likes-and-updated-job (#11/#12) omistavat ne. `WHEN NOT MATCHED`: `tags = []`, `tags_enriched = FALSE`, `like_count = 0`.
 
 ```sql
 MERGE activitystreams.objects T
@@ -201,10 +215,10 @@ WHEN MATCHED AND S.updated > T.updated THEN
         T.published   = S.published,
         T.updated     = S.updated,
         T.source      = S.source
-        -- tags, like_count ja deleted jätetään tarkoituksella pois
+        -- tags, tags_enriched, like_count ja deleted jätetään tarkoituksella pois
 WHEN NOT MATCHED THEN
-    INSERT (id, source, published, updated, tags, like_count, deleted, object_json)
-    VALUES (S.id, S.source, S.published, S.updated, [], 0, FALSE, S.object_json)
+    INSERT (id, source, published, updated, tags, tags_enriched, like_count, deleted, object_json)
+    VALUES (S.id, S.source, S.published, S.updated, [], FALSE, 0, FALSE, S.object_json)
 ```
 
 **Kuva-prioriteetti:** (1) `<media:thumbnail>`, (2) `<enclosure type="image/*">`, (3) `<image>` kanavan tasolla.
@@ -213,25 +227,25 @@ WHEN NOT MATCHED THEN
 
 ## Cloud Run Job: OpenAhjo-päätökset (#3)
 
-Ajastus: `0 3 * * *` (06:00 EET). Base URL: `http://dev.hel.fi/openahjo/v1`.
+Ajastus: `0 3 * * *` (06:00 EET). Virheenkäsittely: ks. [Virheenkäsittely ja retry-logiikka](#virheenkäsittely-ja-retry-logiikka). Base URL: `http://dev.hel.fi/openahjo/v1`.
 
 **Fetch-ikkuna:** Ei kiinteää `-24h`. Käytetään `config`-taulun `ahjo.last_fetched_at`-arvoa — päivitetään vasta onnistuneen ajon jälkeen.
 
 **Kenttäkartoitus:**
 
-| AS2-kenttä | OpenAhjo-kenttä |
-|---|---|
-| `id` | `register_id` (esim. `HEL-2026-012345`) |
-| `name` | `subject` |
-| `summary` | `agenda_item.content` (resolution) |
-| `published` | `latest_decision_date` |
-| `attributedTo.name` | `policymaker.name` |
+| AS2-kenttä | OpenAhjo-kenttä | Huomio |
+|---|---|---|
+| `id` | `register_id` (esim. `HEL-2026-012345`) | Muunnetaan IRI-muotoon: `…/decisions/helsinki/{register_id}` |
+| `name` | `subject` | |
+| `summary` | `agenda_item.content` (resolution) | |
+| `published` | `latest_decision_date` | |
+| `attributedTo.name` | `policymaker.name` | |
 
 ---
 
 ## Cloud Run Job: HRI-datasetit (#4)
 
-Ajastus: `30 3 * * *` (06:30 EET). Base URL: `https://hri.fi/data/api/3/action/`.
+Ajastus: `30 3 * * *` (06:30 EET). Virheenkäsittely: ks. [Virheenkäsittely ja retry-logiikka](#virheenkäsittely-ja-retry-logiikka). Base URL: `https://hri.fi/data/api/3/action/`.
 
 Datasetit tallennetaan AS2 `Document`-objekteina, kategoriat `OrderedCollection`-objekteina. Kaksikieliset metatiedot: `nameMap.fi` / `nameMap.sv`, `summaryMap.fi` / `summaryMap.sv`.
 
@@ -250,11 +264,20 @@ Datasetit tallennetaan AS2 `Document`-objekteina, kategoriat `OrderedCollection`
 
 ## Cloud Run Job: Voikko-tagienrikastus (#6)
 
-Ajastus: `30 * * * *` (30 min välein). Käsittelee erissä (100 kpl) objektit joilla `ARRAY_LENGTH(IFNULL(tags, [])) = 0`.
+Ajastus: `30 * * * *` (30 min välein). Virheenkäsittely: ks. [Virheenkäsittely ja retry-logiikka](#virheenkäsittely-ja-retry-logiikka). Käsittelee erissä (100 kpl) objektit joilla `tags_enriched = FALSE`.
 
 **Analyysi:** `libvoikko` palauttaa sanan `BASEFORM`-lemman. Käytetyt sanaluokat: `nimisana`, `erisnimi`, `paikannimi`, `paikannimi_ulkomaat`, `teonsana`, `määrite`. Hylätään: `suhdesana`, `sidesana`, `kieltosana`, `asemosana`, `partikkeli`.
 
-Top-16 yleisintä lemmaa tallennetaan `tags`-sarakkeeseen `MERGE UPDATE` -operaatiolla. Voikko-job on `tags`-sarakkeen ainoa kirjoittaja. Job merkitsee käsitellyn rivin `tags_enriched = TRUE` myös silloin kun tulos on tyhjä lista, jotta rivi ei jää ikuiseen uudelleenkäsittelysilmukkaan.
+Top-16 yleisintä lemmaa tallennetaan `tags`-sarakkeeseen `MERGE UPDATE` -operaatiolla. Voikko-job on `tags`-sarakkeen ainoa kirjoittaja. Job asettaa aina `tags_enriched = TRUE` käsittelyn jälkeen — myös silloin kun tulos on tyhjä lista. Tämä estää rivin jäämisen ikuiseen uudelleenkäsittelysilmukkaan.
+
+```sql
+MERGE activitystreams.objects T
+USING enriched_batch S ON T.id = S.id
+WHEN MATCHED THEN
+    UPDATE SET
+        T.tags          = S.tags,
+        T.tags_enriched = TRUE
+```
 
 ---
 
@@ -262,9 +285,11 @@ Top-16 yleisintä lemmaa tallennetaan `tags`-sarakkeeseen `MERGE UPDATE` -operaa
 
 `POST /ap/scrape { "url": "https://..." }` — palauttaa AS2 `Article`-objektin ja tallentaa sen `objects`-tauluun.
 
-Endpoint on avointa dataa: autentikointia ei vaadita, samoin kuin RSS-syötteetkin ovat julkista tietoa. Kirjoitusoikeus BigQueryyn on Cloud Run -palvelun palvelutilillä IAM-oikeuksilla.
+Endpoint on julkinen (ks. [Autentikaatio ja valtuutus](#autentikaatio-ja-valtuutus)). Kirjoitusoikeus BigQueryyn on Cloud Run -palvelun palvelutilillä IAM-oikeuksilla, ei kutsujalla.
 
-**Kenttäkartoitus:**
+**Duplikaattipyynnöt:** Sama URL kahdesti tuottaa saman `id`:n (`sha256(url)`), joten MERGE-operaatio hoitaa duplikaatin hiljaisesti. Ulkopuolisten sivustojen kuormituksen vuoksi suositellaan client-puolista debouncea ennen toisen pyynnön lähettämistä.
+
+**Kenttäkartoitus** (ks. myös [`id`-kentän kaava](#id-kentän-kaava-lähteittäin)):
 
 | AS2-kenttä | OG-lähde | Fallback |
 |---|---|---|
@@ -274,7 +299,7 @@ Endpoint on avointa dataa: autentikointia ei vaadita, samoin kuin RSS-syötteetk
 | `published` | `article:published_time` | Scrape-hetki |
 | `updated` | `article:modified_time` | Scrape-hetki |
 
-`published` käyttää scrape-hetkeä fallbackina (toisin kuin RSS-job, joka ohittaa artikkelin). Tämä on hyväksyttynä koska OG-scraper on käyttäjän manuaalisesti käynnistämä toiminto.
+`published` käyttää scrape-hetkeä fallbackina (toisin kuin RSS-job, joka ohittaa artikkelin). Tämä on hyväksyttävää koska OG-scraper on käyttäjän manuaalisesti käynnistämä toiminto.
 
 ---
 
@@ -282,7 +307,7 @@ Endpoint on avointa dataa: autentikointia ei vaadita, samoin kuin RSS-syötteetk
 
 Vastaanottaa AS2-aktiviteetteja JSON:na. Validoi tyypin ja pakolliset kentät. Kirjoittaa `activities`- ja tarvittaessa `likes`-tauluun BigQuery Storage Write API:lla.
 
-**Autentikointi:** Kirjoituspalvelu on suojattu Cloud IAM:lla. Ainoastaan palvelutilillä (`roles/run.invoker`) on oikeus kutsua endpointia. Outbox (`GET /ap/outbox`) ja scraper (`POST /ap/scrape`) ovat julkisia — data on avointa kuten RSS.
+Autentikaatio: ks. [Autentikaatio ja valtuutus](#autentikaatio-ja-valtuutus).
 
 ### Tuetut aktiviteetit
 
@@ -296,7 +321,9 @@ Vastaanottaa AS2-aktiviteetteja JSON:na. Validoi tyypin ja pakolliset kentät. K
 | `Like` | `activities` + `likes` |
 | `Dislike` | ❌ 400 Bad Request |
 | `Announce` | ❌ 400 Bad Request |
-| `Undo` | ❌ 400 Bad Request |
+| `Undo` | ❌ 400 Bad Request — ks. alla |
+
+**Miksi `Undo` ei ole tuettu?** Tykkäys tallennetaan anonymisoituna: `likes`-taulussa ei ole käyttäjätunnistetta jolla tykkäyksen voisi yksilöidä jälkikäteen. Kun data on anonymisoitu, käyttäjä ei enää omista sitä eikä voi siksi perua toimintoa. Tämä on tietoinen arkkitehtuuripäätös, ei puuttuva toteutus.
 
 ### Kommenttiketjun syvyysvalidointi
 
@@ -310,7 +337,7 @@ in_reply_to kohde on Note/vastaus → 400 Bad Request
 
 ### Delete-semantiikka
 
-Delete ei poista tietokannasta. Poistettu kommentti näytetään paikkamerkkinä `[kommentti poistettu]` jos sillä on vastauksia.
+Delete ei poista tietokannasta. `activities`-tauluun kirjataan `Delete`-tapahtuma ja `objects.deleted` asetetaan `TRUE`:ksi. Poistettu kommentti näytetään paikkamerkkinä `[kommentti poistettu]` jos sillä on vastauksia.
 
 ---
 
@@ -364,13 +391,13 @@ ORDER BY
 
 ### `totalItems`-caching
 
-`COUNT(*)`-kysely cachetetaan Cloud Run -muistissa 5 minuutiksi tag-kombinaatiota kohden. Cache on instanssikohtainen — `totalItems` on approksimatiivinen arvo.
+`COUNT(*)`-kysely cachetetaan Cloud Run -muistissa 5 minuutiksi tag-kombinaatiota kohden. Cache on instanssikohtainen — `totalItems` on approksimatiivinen arvo. Caching vähentää merkittävästi BigQuery-kustannuksia: COUNT(*) ei aja per pyyntö, vain 5 minuutin välein.
 
 ---
 
 ## Tykkäyslaskuri ja updated-aikaleima (#11/#12)
 
-`likes-and-updated-job` ajaa 15 minuutin välein kaksi laskentaa peräkkäin samassa Cloud Run Job -suorituksessa. Nämä olivat aiemmin erilliset jobit; ne on yhdistetty koska molemmat kirjoittavat samaan `objects`-tauluun samalla 15 min rytmillä.
+`likes-and-updated-job` ajaa 15 minuutin välein kaksi laskentaa peräkkäin samassa Cloud Run Job -suorituksessa. Nämä olivat aiemmin erilliset jobit; ne on yhdistetty koska molemmat kirjoittavat samaan `objects`-tauluun samalla 15 min rytmillä. Virheenkäsittely: ks. [Virheenkäsittely ja retry-logiikka](#virheenkäsittely-ja-retry-logiikka).
 
 ### Vaihe 1: like_count-päivitys
 
@@ -387,13 +414,13 @@ WHEN MATCHED AND T.deleted = FALSE
   THEN UPDATE SET T.like_count = S.cnt
 ```
 
-- Laskuri voi vain **kasvaa** — `Undo Like` ei ole mahdollinen
+- Laskuri voi vain **kasvaa** — `Undo Like` ei ole mahdollinen (ks. [Miksi `Undo` ei ole tuettu?](#tuetut-aktiviteetit))
 - Laskuri on anonyymi — ei tietoa kuka tykkäsi
 - `deleted = FALSE` -ehto estää poistettujen objektien päivittymisen
 
 ### Vaihe 2: updated-aikaleiman päivitys
 
-Kun artikkeliin kohdistuu käyttäjäaktiivisuutta, **thread_root-artikkelin** `updated` päivittyy:
+Kun artikkeliin kohdistuu käyttäjäaktiivisuutta, **thread_root-artikkelin** `updated` päivittyy. Poistetut aktiviteetit suodatetaan `object_id`:n perusteella: jos `activities`-taulussa on `type = 'Delete'` samalla `object_id`:llä, kyseinen aktiviteetti jätetään huomiotta.
 
 | Tapahtuma | Päivittää `updated` |
 |---|---|
@@ -406,8 +433,12 @@ Kun artikkeliin kohdistuu käyttäjäaktiivisuutta, **thread_root-artikkelin** `
 ```sql
 SELECT COALESCE(thread_root, object_id) AS root_url,
        MAX(published) AS last_activity_at
-FROM activitystreams.activities
-WHERE type IN ('Like', 'Create') AND deleted = FALSE
+FROM activitystreams.activities a
+WHERE type IN ('Like', 'Create')
+  AND NOT EXISTS (
+    SELECT 1 FROM activitystreams.activities d
+    WHERE d.type = 'Delete' AND d.object_id = a.object_id
+  )
 GROUP BY root_url
 ```
 
@@ -434,14 +465,14 @@ Query-API upottaa `like_count`-arvon palautushetkellä suoraan AS2-objektiin:
 
 ## RSS-syötteet ilman pubDate (#14)
 
-RSS-syötteet joilta `<pubDate>` puuttuu rakenteellisesti jäävät nykyisellä logiikailla indeksoimatta. Ratkaisu (toteutetaan tarvittaessa):
+RSS-syötteet joilta `<pubDate>` puuttuu rakenteellisesti jäävät nykyisellä logiikailla indeksoimatta. Ratkaisu (toteutetaan tarvittaessa — ks. #18):
 
 1. RSS-job tallentaa nämä artikkelit väliaikaiseen varastoon (`activitystreams.objects_pending`)
 2. Erillinen rikastusjob hakee `published`-arvon muista lähteistä: OG-scraper (#8), HTTP `Last-Modified`, JSON-LD `datePublished`
 3. Kun `published` on selvitetty, artikkeli siirretään normaaliin `objects`-tauluun
 4. Jos `published` ei selviä 7 päivässä, artikkeli hävitetään välivarastosta
 
-Prioriteetti: **matala** — toteutetaan vasta kun jokin RSS-lähde oikeasti aiheuttaa ongelman.
+Prioriteetti: **matala** — toteutetaan vasta kun jokin RSS-lähde oikeasti aiheuttaa ongelman. Skeema: ks. #18.
 
 ---
 
@@ -477,6 +508,7 @@ Jos MERGE-operaatio epäonnistuu: koko batch peruutetaan, `last_fetched_at` ei p
 |---|---|---|
 | BigQuery kyselyt (100k riviä, n=500) | ~110 MB/pyyntö | ~$0.0007/pyyntö |
 | Ilmainen 1 TB/kk -kiintiö | ~9 000 pyyntöä 100k rivillä | $0/kk |
+| `totalItems` COUNT(*) | Cachetettu 5 min — ei aja per pyyntö | Merkittävä säästö |
 | Cloud Run Job -suoritukset | <30s/ajo | $0/kk (ilmainen taso) |
 | Cloud Run palvelu | ~1000 pyyntöä/kk | $0/kk (ilmainen taso) |
 
@@ -498,3 +530,7 @@ Jos MERGE-operaatio epäonnistuu: koko batch peruutetaan, `last_fetched_at` ei p
 - #11 Tykkäyslaskuri
 - #12 `updated`-aikaleima
 - #14 RSS-syötteet ilman pubDate
+- #15 Lisensointimerkintä
+- #16 Cloud Run ympäristömuuttujat
+- #17 Logging ja monitoring
+- #18 objects_pending-skeema
