@@ -17,6 +17,7 @@ Kirjoittajat per taulu:
   activitystreams.objects    ← jobit #2 (RSS), #3 (Ahjo), #4 (HRI), #8 (OG-scraper)
                                 suora MERGE-kirjoitus, tavallinen taulu
                                 tags-sarakkeen omistaja: Voikko-job (#6)
+                                like_count-sarakkeen omistaja: likes-sync-job (#11)
 
   activitystreams.activities ← kirjoituspalvelu (#7): käyttäjätoiminnot
                                 (kommentit, tykkäykset, käyttäjän luomat objektit)
@@ -58,8 +59,10 @@ CREATE TABLE activitystreams.objects (
   id           STRING    NOT NULL OPTIONS(description='AS2 id – domain-pohjainen IRI, primääriavain'),
   source       STRING    NOT NULL OPTIONS(description='Lähde: rss | ahjo | hri | scraped | user'),
   published    TIMESTAMP          OPTIONS(description='AS2 published – NULL jos metatietoa ei saatavilla'),
-  updated      TIMESTAMP          OPTIONS(description='AS2 updated – scrape-hetki fallbackissa'),
-  tags         STRING    REPEATED OPTIONS(description='Lemmatisoidut tagit (Voikko #6) + likes:N-tagi (#11)'),
+  updated      TIMESTAMP          OPTIONS(description='AS2 updated – päivittyy käyttäjäaktiivisuudesta (#12)'),
+  tags         STRING    REPEATED OPTIONS(description='Lemmatisoidut tagit (Voikko #6)'),
+  like_count   INT64     NOT NULL DEFAULT 0
+                         OPTIONS(description='Tykkäysmäärä activitystreams.likes-taulusta, päivitetään likes-sync-jobilla (#11)'),
   deleted      BOOL      NOT NULL DEFAULT FALSE,
   object_json  JSON               OPTIONS(description='Koko AS2-objekti natiivina JSON-tyypinä')
 )
@@ -166,7 +169,7 @@ Ajastus: `0 * * * *` (kerran tunnissa).
 | MTV Uutiset | `https://www.mtvuutiset.fi/rss.xml` |
 | Valtioneuvosto | autodiscovery → tallennetaan `config`-tauluun |
 
-**Tallennuslogiikka:** MERGE-operaatio `id`-kentän perusteella. `tags`-sarake jätetään `WHEN MATCHED` -haaran ulkopuolelle — Voikko-job (#6) omistaa sen. `WHEN NOT MATCHED`: `tags = []`.
+**Tallennuslogiikka:** MERGE-operaatio `id`-kentän perusteella. `tags`- ja `like_count`-sarakkeet jätetään `WHEN MATCHED` -haaran ulkopuolelle — Voikko-job (#6) ja likes-sync-job (#11) omistavat ne. `WHEN NOT MATCHED`: `tags = []`, `like_count = 0`.
 
 ```sql
 MERGE activitystreams.objects T
@@ -177,10 +180,10 @@ WHEN MATCHED AND S.updated > T.updated THEN
         T.published   = S.published,
         T.updated     = S.updated,
         T.source      = S.source
-        -- tags ja deleted jätetään tarkoituksella pois
+        -- tags, like_count ja deleted jätetään tarkoituksella pois
 WHEN NOT MATCHED THEN
-    INSERT (id, source, published, updated, tags, deleted, object_json)
-    VALUES (S.id, S.source, S.published, S.updated, [], FALSE, S.object_json)
+    INSERT (id, source, published, updated, tags, like_count, deleted, object_json)
+    VALUES (S.id, S.source, S.published, S.updated, [], 0, FALSE, S.object_json)
 ```
 
 **Kuva-prioriteetti:** (1) `<media:thumbnail>`, (2) `<enclosure type="image/*">`, (3) `<image>` kanavan tasolla.
@@ -226,11 +229,11 @@ Datasetit tallennetaan AS2 `Document`-objekteina, kategoriat `OrderedCollection`
 
 ## Cloud Run Job: Voikko-tagienrikastus (#6)
 
-Ajastus: `30 * * * *` (30 min välein). Käsittelee erissä (100 kpl) objektit joilla `ARRAY_LENGTH(IFNULL(tags, [])) = 0`.
+Ajastus: `30 * * * *` (30 min välein). Käsittelee erissä (100 kpl) objektit joilla `tags_enriched = FALSE`.
 
 **Analyysi:** `libvoikko` palauttaa sanan `BASEFORM`-lemman. Käytetyt sanaluokat: `nimisana`, `erisnimi`, `paikannimi`, `paikannimi_ulkomaat`, `teonsana`, `määrite`. Hylätään: `suhdesana`, `sidesana`, `kieltosana`, `asemosana`, `partikkeli`.
 
-Top-16 yleisintä lemmaa tallennetaan `tags`-sarakkeeseen `MERGE UPDATE` -operaatiolla. Voikko-job on `tags`-sarakkeen ainoa kirjoittaja lähdesisällölle.
+Top-16 yleisintä lemmaa tallennetaan `tags`-sarakkeeseen `MERGE UPDATE` -operaatiolla. Voikko-job merkitsee rivin `tags_enriched = TRUE` aina käsittelyn jälkeen — myös silloin kun tulos on tyhjä lista, jotta rivi ei jää ikuiseen uudelleenkäsittelysilmukkaan.
 
 ---
 
@@ -290,7 +293,7 @@ Delete ei poista tietokannasta. Poistettu kommentti näytetään paikkamerkkinä
 
 ### Paginaatiomalli
 
-Client pyytää aina alusta `n` kappaletta. Ei kursoreja, ei sivunumeroita. Maksimi `n=500`.
+Client pyytää aina alusta `n` kappaletta. Ei kursoreja, ei sivunumeroita. Yli 500:n `n`-arvo palauttaa `400 Bad Request`.
 
 ```
 GET /ap/outbox?tag=asuminen&n=5     → top-5
@@ -318,9 +321,9 @@ Ei `next`, ei `prev`, ei `first`. `totalItems` kertoo clientille paljonko pyytä
 
 ```sql
 ORDER BY
-  tag_hits      DESC,          -- tagiosumien määrä
-  like_count    DESC,          -- likes:N-tagista luettu
-  updated       DESC,          -- viimeisin aktiivisuus
+  relevance     DESC,            -- osuvien hakutagien määrä
+  like_count    DESC,            -- suorat tykkäykset objects-taulusta
+  updated       DESC,            -- viimeisin aktiivisuus
   published     DESC NULLS LAST, -- alkuperäinen julkaisu (fallback-objektit loppuun)
   id            ASC
 ```
@@ -330,34 +333,48 @@ ORDER BY
 | Parametri | Kuvaus | Oletus | Maksimi |
 |---|---|---|---|
 | `tag` | Toistuva. Pakollinen — `400` jos puuttuu. | — | — |
-| `n` | Palautettavien määrä. | 50 | 500 |
+| `n` | Palautettavien määrä. Yli 500 → `400`. | 50 | 500 |
 | `after` | ISO 8601. Aktivoi partition-karsintaa. | — | — |
 
 ### `totalItems`-caching
 
-`COUNT(*)`-kysely cachetetaan Cloud Run -muistissa 5 minuutiksi tag-kombinaatiota kohden.
+`COUNT(*)`-kysely cachetetaan Cloud Run -muistissa 5 minuutiksi tag-kombinaatiota kohden. Cache on instanssikohtainen — `totalItems` on approksimatiivinen arvo.
 
 ---
 
-## Tykkäyslaskuri: `likes:N`-tagi (#11)
+## Tykkäyslaskuri: `like_count`-sarake (#11)
 
-Laskentajob (15 min välein) laskee tykkäysmäärät `likes`-taulusta ja päivittää `objects`-taulun `tags`-sarakkeeseen tagin muotoa `likes:N`.
+`like_count INT64 NOT NULL DEFAULT 0` on suoraan `activitystreams.objects`-taulussa. Laskentajob (15 min välein) laskee tykkäysmäärät `activitystreams.likes`-taulusta ja päivittää sarakkeen MERGE-operaatiolla.
 
 ```sql
--- Päivitys
-UPDATE open_dataset.objects
-SET tags = ARRAY(
-  SELECT t FROM UNNEST(tags) t WHERE NOT STARTS_WITH(t, 'likes:')
-  UNION ALL
-  SELECT CONCAT('likes:', CAST(@like_count AS STRING))
-)
-WHERE id = @object_url
+MERGE activitystreams.objects T
+USING (
+  SELECT object_id, COUNT(*) AS cnt
+  FROM activitystreams.likes
+  GROUP BY object_id
+) S ON T.id = S.object_id
+WHEN MATCHED AND T.deleted = FALSE
+  THEN UPDATE SET T.like_count = S.cnt
 ```
 
 - Laskuri voi vain **kasvaa** — `Undo Like` ei ole mahdollinen
-- Tagi on anonyymi — ei tietoa kuka tykkäsi
-- Yksi `likes:`-tagi per objekti — päivitys korvaa edellisen
-- `likes:N`-tagit **eivät** näy hakufilttereissä eivätkä UI:n tagipilvessä
+- Laskuri on anonyymi — ei tietoa kuka tykkäsi
+- `deleted = FALSE` -ehto estää poistettujen objektien päivittymisen
+
+### `likes`-kenttä AS2-vastauksessa
+
+Query-API upottaa `like_count`-sarakkeen arvon palautushetkellä suoraan AS2-objektiin:
+
+```json
+{
+  "type": "Article",
+  "id": "https://activitystreams.uutisseuranta.net/ap/objects/articles/hs/abc123",
+  "name": "Helsingin kaupunginvaltuusto hyväksyi asunto-ohjelman",
+  "likes": 42
+}
+```
+
+`object_json`-sarakkeeseen ei tallenneta `likes`-kenttää pysyvästi — se lasketaan lennossa.
 
 ---
 
@@ -375,11 +392,14 @@ Kun artikkeliin kohdistuu käyttäjäaktiivisuutta, **thread_root-artikkelin** `
 
 ```sql
 -- Laskentajob
-SELECT thread_root_url, MAX(created_at) AS last_activity_at
-FROM social_dataset.activities
+SELECT COALESCE(thread_root, object_id) AS root_url,
+       MAX(published) AS last_activity_at
+FROM activitystreams.activities
 WHERE type IN ('Like', 'Create') AND deleted = FALSE
-GROUP BY thread_root_url
+GROUP BY root_url
 ```
+
+`COALESCE(thread_root, object_id)` varmistaa että artikkeliin suoraan kohdistuvat tykkäykset (joilla `thread_root = NULL`) käsitellään oikein.
 
 `updated` ei koskaan kulje taaksepäin (`AND @last_activity_at > updated`).
 
