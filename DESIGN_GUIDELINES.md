@@ -67,40 +67,47 @@ Vastaukseen ei voi vastata. Kirjoituspalvelu hylkää yrityksen `400 Bad Request
 
 ---
 
-## Outbox-sivutus: tagirelevanssi + opaakki kursori
+## Outbox-sivutus: tagirelevanssi, ei kursoreja
 
 ### Järjestys
 
-Outbox-sivu palauttaa objektit **tagirelevanssijärjestyksessä**, ei aikajärjestyksessä. Relevanssi on yksinkertainen osumien laskenta: kuinka monta clientin pyytämistä tageista löytyy objektin `tag`-kentästä. Tasatilanteessa järjestetään `published DESC, id ASC`.
+Outbox palauttaa objektit **tagirelevanssijärjestyksessä**, ei aikajärjestyksessä. Relevanssi on yksinkertainen osumien laskenta: kuinka monta clientin pyytämistä tageista löytyy objektin `tag`-kentästä. Tasatilanteessa järjestetään `like_count DESC, updated DESC, published DESC, id ASC`.
 
 Aikajärjestystä ei käytetä pääjärjestyksenä, koska saman aiheen uutiset eri lähteistä ovat tasavertaisia riippumatta siitä, kuka julkaisi ensin.
 
-### Kursori
+### Malli
 
-Koska järjestys ei perustu aikaleimaan, sivutuskursorina käytetään **opaakkia `cursor`-parametria**. Client ei koskaan muodosta kursoria itse eikä pure sen sisältöä — palvelin kirjoittaa sen `next`-linkkiin ja lukee sen seuraavalla pyynnöllä.
-
-Kursori on base64url-enkoodattu offset-arvo. Tämä on luotettava BigQuery-toteutuksessa kunhan `ORDER BY` on deterministinen (relevanssi DESC, published DESC, id ASC) eikä muutu sivujen välillä.
+Client pyytää aina alusta `n` kappaletta. Ei kursoreja, ei sivunumeroita. Client huolehtii itse duplikaattisuodatuksesta `id`-kentän perusteella — jos client haluaa enemmän tuloksia, se pyytää suuremmalla `n`:llä.
 
 ```
-cursor = base64url({ "offset": 50 })
+GET /ap/outbox?tag=asuminen&n=50    → top-50
+GET /ap/outbox?tag=asuminen&n=100   → top-100 (sisältää edellisen 50, client suodattaa)
+GET /ap/outbox?tag=asuminen&n=150   → top-150
 ```
+
+`OrderedCollectionPage`-tasoa ei tarvita — pelkkä `OrderedCollection` riittää.
 
 ### AS2-rakenne
 
-`GET /ap/outbox` ilman sivutusparametreja palauttaa `OrderedCollection`-kokoelman kuvauksen: vain `totalItems` ja `first`-linkki. Varsinaisia objekteja ei palauteta.
+```json
+{
+  "@context": "https://www.w3.org/ns/activitystreams",
+  "type": "OrderedCollection",
+  "id": "https://activitystreams.uutisseuranta.net/ap/outbox?tag=asuminen&n=50",
+  "totalItems": 4821,
+  "orderedItems": [ ]
+}
+```
 
-`GET /ap/outbox?n=50` ja seuraavat `next`-linkit palauttavat `OrderedCollectionPage`-sivun.
-
-Sivutus on **yksisuuntainen** (uusimmasta/relevanteimmasta alaspäin). `prev` on aina `null`. Alkuun palataan `first`-linkin kautta.
+Ei `next`, ei `prev`, ei `cursor`, ei `first`. `totalItems` kertoo clientille paljonko pyytää maksimissaan.
 
 ### Query-parametrit
 
-| Parametri | Kuka asettaa | Kuvaus |
-|---|---|---|
-| `tag` | Client | Yksi tai useampi tagi (toistuva). `tag=asuminen&tag=helsinki` |
-| `n` | Client | Sivun koko. Palvelin käyttää 50 oletuksena jos puuttuu. |
-| `cursor` | Palvelin | Opaakki. Kirjoitetaan `next`-linkkiin. Client ei aseta tätä. |
-| `after` | Client | Valinnainen aikaikkuna: vain tämän jälkeen julkaistut. |
+| Parametri | Kuvaus |
+|---|---|
+| `tag` | Yksi tai useampi tagi (toistuva). Pakollinen — `400` jos puuttuu. |
+| `n` | Haettavien objektien määrä. Oletus 50, maksimi 500. |
+| `after` | Valinnainen aikaikkuna: vain tämän jälkeen julkaistut. |
 
 `source`-parametria ei ole: client ei päätä mistä lähteestä dataa haetaan, vain mitä tageja seurataan.
 
@@ -109,4 +116,4 @@ Sivutus on **yksisuuntainen** (uusimmasta/relevanteimmasta alaspäin). `prev` on
 ## Liittyy
 
 - Kaikki muut tiketit — nämä periaatteet ohjaavat kaikkia arkkitehtuuripäätöksiä
-- #10 OrderedCollectionPage -sivutus
+- #10 Outbox-endpoint
