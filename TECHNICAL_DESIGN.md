@@ -49,6 +49,9 @@ Kirjoittajat per taulu:
 
 Huom: `likes-and-updated-job` korvaa aiemmat erilliset `likes-sync-job` ja `activity-updated-job` -ajastukset. Molemmat laskennat ajetaan samassa Cloud Run Job -suorituksessa — ks. [Tykkäyslaskuri ja updated-aikaleima](#tykkäyslaskuri-ja-updated-aikaleima-1112).
 
+> [!NOTE]
+> **Kesäaika:** Cloud Scheduler käyttää UTC:tä eikä säädä kesäaikaa automaattisesti. EET (talviaika UTC+2) ja EEST (kesäaika UTC+3) eroavat tunnin. Cron-kommentit on merkitty EET-ajassa — kesällä ajastukset lähtevät tunnin myöhemmin kuin kommentti ilmoittaa. Tämä on hyväksytty trade-off: ajastusajalla ei ole kriittistä merkitystä tässä kontekstissa.
+
 ---
 
 ## Autentikaatio ja valtuutus
@@ -166,6 +169,7 @@ Config-taulun rivejä ei koskaan poisteta — vain päivitetään (`MERGE UPDATE
 | HRI-datasetti | `https://activitystreams.uutisseuranta.net/ap/objects/hri/datasets/{ckan-uuid}` |
 | HRI-kategoria | `https://activitystreams.uutisseuranta.net/ap/objects/hri/groups/{group-name}` |
 | OG-scrapattu | `https://activitystreams.uutisseuranta.net/ap/objects/scraped/{sha256(url)}` |
+| Käyttäjän luoma | `https://activitystreams.uutisseuranta.net/ap/objects/user/{google-sub}/{ulid}` |
 
 ### `source`-sarake vs. `source`-query-parametri
 
@@ -287,7 +291,9 @@ WHEN MATCHED THEN
 
 Endpoint on julkinen (ks. [Autentikaatio ja valtuutus](#autentikaatio-ja-valtuutus)). Kirjoitusoikeus BigQueryyn on Cloud Run -palvelun palvelutilillä IAM-oikeuksilla, ei kutsujalla.
 
-**Duplikaattipyynnöt:** Sama URL kahdesti tuottaa saman `id`:n (`sha256(url)`), joten MERGE-operaatio hoitaa duplikaatin hiljaisesti. Ulkopuolisten sivustojen kuormituksen vuoksi suositellaan client-puolista debouncea ennen toisen pyynnön lähettämistä.
+**Domain-whitelist:** Scraper hyväksyy vain manuaalisesti ylläpidetyn domain-listan URL:t. Uusi domain lisätään listaan harkiten ja testataan ennen käyttöönottoa. Tuntemattomat domainit palauttavat `403 Forbidden`. Tämä estää SSRF-hyväksikäytöt ja tahattoman ulkopuolisten palvelinten kuormittamisen.
+
+**Duplikaattipyynnöt:** Sama URL kahdesti tuottaa saman `id`:n (`sha256(url)`), joten MERGE-operaatio hoitaa duplikaatin hiljaisesti.
 
 **Kenttäkartoitus** (ks. myös [`id`-kentän kaava](#id-kentän-kaava-lähteittäin)):
 
@@ -338,6 +344,15 @@ in_reply_to kohde on Note/vastaus → 400 Bad Request
 ### Delete-semantiikka
 
 Delete ei poista tietokannasta. `activities`-tauluun kirjataan `Delete`-tapahtuma ja `objects.deleted` asetetaan `TRUE`:ksi. Poistettu kommentti näytetään paikkamerkkinä `[kommentti poistettu]` jos sillä on vastauksia.
+
+### Update-semantiikka
+
+Käyttäjä voi päivittää **vain oman kommenttinsa** sisällön. Organisaatioiden julkaisemia objekteja (RSS, Ahjo, HRI, OG-scraped) ei voi päivittää `Update`-aktiviteetilla — ne ovat jobien omistamia.
+
+- `actor` validoidaan: `Update`-pyynnön `actor` täytyy vastata alkuperäisen `Create`-aktiviteetin `actor`-arvoa. Jos ne eivät täsmää, palautetaan `403 Forbidden`.
+- `published` ei muutu — vain `object_json` ja `updated` päivittyvät.
+- `Update`-aktiviteetti kirjoitetaan `activities`-tauluun ja `objects.object_json` päivitetään MERGE-operaatiolla.
+- `thread_root`-artikkelin `updated` päivittyy muokatusta kommentista (ks. [Tykkäyslaskuri ja updated-aikaleima](#tykkäyslaskuri-ja-updated-aikaleima-1112)).
 
 ---
 
@@ -443,6 +458,9 @@ GROUP BY root_url
 ```
 
 `COALESCE(thread_root, object_id)` varmistaa että artikkeliin suoraan kohdistuvat tykkäykset (joilla `thread_root = NULL`) käsitellään oikein. `updated` ei koskaan kulje taaksepäin (`AND @last_activity_at > updated`).
+
+> [!NOTE]
+> **Poistetun artikkelin kommentit:** Jos artikkeli poistetaan mutta sen kommenteille ei kirjata omaa `Delete`-aktiviteettia, näiden kommenttien `Like`-tapahtumat voivat edelleen kasvattaa `updated`-aikaleimaa. Kommentit voivat jäädä elämään omaa elämäänsä poistetun artikkelin jälkeen. Tämä on hyväksytty trade-off: vaikutus on kosmeettinen, koska poistettu artikkeli ei palaudu outbox-hauissa (`WHERE deleted = FALSE`).
 
 Avoimen datan BigQueryyn kirjoitetaan vain aikaleima — ei tietoa kuka kommentoi tai tykkäsi.
 

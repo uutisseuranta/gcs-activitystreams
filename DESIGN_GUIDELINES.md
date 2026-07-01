@@ -165,7 +165,6 @@ Ei `next`, ei `prev`, ei `cursor`, ei `first`. `totalItems` kertoo clientille pa
 |---|---|
 | `tag` | Yksi tai useampi tagi (toistuva). Pakollinen — `400` jos puuttuu. |
 | `n` | Haettavien objektien määrä. Oletus 50, maksimi 500. |
-| `after` | Valinnainen aikaikkuna: vain tämän jälkeen julkaistut. |
 
 `source`-parametria ei ole: client ei päätä mistä lähteestä dataa haetaan, vain mitä tageja seurataan.
 
