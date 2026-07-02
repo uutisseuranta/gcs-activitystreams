@@ -1,6 +1,8 @@
-# Technical Design: gcs-activitystreams
+# Technical Design: bq-activitystreams
 
 Tämä dokumentti kokoaa kaikkien tikettien arkkitehtuuripäätökset yhdeksi luettavaksi kokonaisuudeksi. Arkkitehtuuriperiaatteet ovat [DESIGN_GUIDELINES.md](./DESIGN_GUIDELINES.md) -tiedostossa.
+
+Repositorio on nimetty uudelleen: `gcs-activitystreams` → `bq-activitystreams` kuvaamaan paremmin BigQuery-tietovarastovalintaa GCS:n sijaan.
 
 ---
 
@@ -36,7 +38,7 @@ Kirjoittajat per taulu:
 | **Julkinen BigQuery dataset** | `activitystreams` (avoin data) |
 | **Yksityinen BigQuery dataset** | `activitystreams_social` (sosiaalinen data) |
 | **Sijainti** | `europe-north1` |
-| **GitHub-repo** | `uutisseuranta/gcs-activitystreams` |
+| **GitHub-repo** | `uutisseuranta/bq-activitystreams` |
 
 ### Cloud Scheduler -ajastukset
 
@@ -736,6 +738,18 @@ Kaikki backend-ympäristön muutokset, konttien kääntäminen ja käyttöönoto
    - Työnkulku päivittää Cloud Run -palvelut ja jobit käyttäen `gcloud run` -komentoja ja `deploy/` -kansiossa määriteltyjä ympäristökohtaisia `.env.yaml` -muuttujatiedostoja.
 4. **Savutestit (Post-deploy smoke tests):**
    - Heti onnistuneen käyttöönoton jälkeen pipeline ajaa `live-smoke-test.sh` -skriptin, joka lähettää todellisia pyyntöjä uusiin Cloud Run -endpointteihin ja varmentaa niiden toimivuuden (200 OK, JSON-LD -validisuus).
+
+## Suunnittelu- ja kehityskäytännöt
+
+### Teknologiavalintojen ensisijaisuusperiaate
+Kehityksessä noudatetaan ensisijaisuusperiaatetta riippuvuuksien minimoimiseksi ja järjestelmän pitkäikäisyyden takaamiseksi:
+1. **Ensisijaisesti:** Avoimet standardit (kuten ActivityStreams 2.0, JSON Schema).
+2. **Toissijaisesti:** Standardoidut, de facto standardoidut tai puhtaat "vanilla"-teknologiat (kuten standardit Python-kirjastot, natiivit Docker-kontit, BigQuery SQL).
+
+### Luonnos-Pull Requestit (Draft PR) ja kysymykset kontekstissa
+Monimutkaiset tai laajat kokonaisuudet voidaan aloittaa avaamalla luonnos-Pull Request (Draft PR).
+- PR voi aluksi olla tyhjä runko, johon kirjataan toteutusvaihtoehdot.
+- Avoimet arkkitehtuurikysymykset jätetään Pull Requestin kommenteiksi koodikontekstiin, jolloin niistä keskusteleminen ja päättäminen on luontevaa suoraan GitHubissa.
 
 ---
 
