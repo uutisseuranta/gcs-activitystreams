@@ -1,0 +1,22 @@
+name: Unit tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  unit-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install defusedxml -r requirements-dev.txt
+      - run: bash unit-test.sh
+      - name: Verify STANDARDS.md is in sync with schemas
+        run: |
+          chmod +x generate-standards.sh
+          ./generate-standards.sh
+          git diff --exit-code STANDARDS.md
