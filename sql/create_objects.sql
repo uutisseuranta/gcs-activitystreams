@@ -10,6 +10,8 @@ CREATE TABLE IF NOT EXISTS activitystreams.objects (
   updated       TIMESTAMP          OPTIONS(description='AS2 updated – päivittyy käyttäjäaktiivisuudesta (#12)'),
   tags          ARRAY<STRING>      OPTIONS(description='Lemmatisoidut tagit (Voikko #6)'),
   tags_enriched BOOL      NOT NULL OPTIONS(description='TRUE kun Voikko-job on käsitellyt rivin – estää ikuisen uudelleenkäsittelysilmukan'),
+  og_enriched   BOOL      NOT NULL OPTIONS(description='TRUE kun OG-rikastus on tehty (onnistui tai epäonnistui)'),
+  og_enriched_error STRING             OPTIONS(description='Virheilmoitus jos OG-rikastus epäonnistui, NULL jos onnistui'),
   like_count    INT64     NOT NULL OPTIONS(description='Tykkäysmäärä activitystreams.likes-taulusta, päivitetään likes-and-updated-jobilla (#11/#12)'),
   deleted       BOOL      NOT NULL OPTIONS(description='Pehmeä poisto – rivi pysyy taulussa, deleted=TRUE piilottaa sen hauista'),
   object_json   JSON               OPTIONS(description='Koko AS2-objekti natiivina JSON-tyypinä')

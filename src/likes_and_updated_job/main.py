@@ -1,12 +1,29 @@
 # src/likes_and_updated_job/main.py
+import datetime
+import json
 import logging
 import os
 import sys
 
 from google.cloud import bigquery
 
+
 # Lokitus
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+class JsonFormatter(logging.Formatter):
+    def format(self, record):
+        log_entry = {
+            "severity": record.levelname,
+            "message": record.getMessage(),
+            "logger": record.name,
+            "time": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+        }
+        if record.exc_info:
+            log_entry["exception"] = self.formatException(record.exc_info)
+        return json.dumps(log_entry, ensure_ascii=False)
+
+handler = logging.StreamHandler()
+handler.setFormatter(JsonFormatter())
+logging.basicConfig(level=logging.INFO, handlers=[handler], force=True)
 logger = logging.getLogger("likes-and-updated-job")
 
 
@@ -71,7 +88,7 @@ def main() -> None:
         updated_job = bq_client.query(updated_merge_query)
         updated_job.result()
         logger.info("Aktiivisuus-aikaleimojen päivitys suoritettu onnistuneesti.")
-        
+
         logger.info("Kaikki synkronointivaiheet suoritettu onnistuneesti loppuun.")
 
     except Exception as e:

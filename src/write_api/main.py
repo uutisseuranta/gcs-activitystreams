@@ -5,14 +5,29 @@ import logging
 import os
 from typing import Any, Dict, Optional
 
+import ulid
 from fastapi import FastAPI, Header, HTTPException, Response
 from google.auth.transport import requests as google_requests
-from google.oauth2 import id_token
 from google.cloud import bigquery
-import ulid
+from google.oauth2 import id_token
+
 
 # Lokitus
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+class JsonFormatter(logging.Formatter):
+    def format(self, record):
+        log_entry = {
+            "severity": record.levelname,
+            "message": record.getMessage(),
+            "logger": record.name,
+            "time": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+        }
+        if record.exc_info:
+            log_entry["exception"] = self.formatException(record.exc_info)
+        return json.dumps(log_entry, ensure_ascii=False)
+
+handler = logging.StreamHandler()
+handler.setFormatter(JsonFormatter())
+logging.basicConfig(level=logging.INFO, handlers=[handler], force=True)
 logger = logging.getLogger("write-api")
 
 app = FastAPI(title="ActivityStreams Write API", version="1.0.0")
@@ -22,6 +37,11 @@ PROJECT = os.getenv("GCP_PROJECT")
 DATASET = os.getenv("BQ_DATASET")
 SOCIAL_DATASET = os.getenv("BQ_SOCIAL_DATASET", "activitystreams_social")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+CLOUD_RUN_SERVICE_URL = os.getenv("CLOUD_RUN_SERVICE_URL", "")
+ALLOW_MOCK_AUTH = os.getenv("ALLOW_MOCK_AUTH", "false").lower() == "true"
+
+# Tuetut audience-arvot: loppukäyttäjän OAuth client ID + service-to-service URL
+ALLOWED_AUDIENCES = [a for a in [GOOGLE_CLIENT_ID, CLOUD_RUN_SERVICE_URL] if a]
 
 if not PROJECT or not DATASET:
     logger.critical("Virhe: GCP_PROJECT ja BQ_DATASET ovat pakollisia ympäristömuuttujia.")
@@ -30,31 +50,47 @@ bq_client = bigquery.Client(project=PROJECT)
 
 
 def verify_auth_token(auth_header: Optional[str]) -> str:
-    """Validoi Google OIDC JWT-tokenin ja palauttaa käyttäjän sub-tunnisteen."""
+    """Validoi Google OIDC JWT-tokenin ja palauttaa käyttäjän sub-tunnisteen.
+
+    Tukee kahta audience-arvoa (confused deputy -suojaus):
+    - GOOGLE_CLIENT_ID: loppukäyttäjän Sign in with Google -tokeni
+    - CLOUD_RUN_SERVICE_URL: service-to-service OIDC-tokeni (Cloud Scheduler, jobit)
+    """
     if not auth_header or not auth_header.startswith("Bearer "):
+        logger.warning("Autentikaatio hylätty: Authorization-otsake puuttuu tai virheellinen")
         raise HTTPException(status_code=401, detail="Missing or invalid Authorization header.")
-    
+
     token = auth_header.split(" ")[1]
-    
-    # ⚠️ Sallitaan mock-testitestiympäristössä helppoa testausta varten
-    if token == "mock-test":
+
+    # Mock-token sallittu vain kun ALLOW_MOCK_AUTH=true (ei koskaan tuotannossa)
+    if ALLOW_MOCK_AUTH and token == "mock-test":
+        logger.warning("Mock-autentikaatio käytössä — vain kehitysympäristöön")
         return "test-user-sub-12345"
 
-    try:
-        # Validoidaan OIDC token Googlen kautta
-        id_info = id_token.verify_oauth2_token(
-            token,
-            google_requests.Request(),
-            audience=GOOGLE_CLIENT_ID
-        )
-        
-        if not id_info.get("email_verified"):
-            raise HTTPException(status_code=403, detail="Email domain must be verified.")
-            
-        return id_info["sub"]
-    except Exception as e:
-        logger.error(f"Tokenin validointi epäonnistui: {e}")
-        raise HTTPException(status_code=401, detail="Authentication failed.")
+    # Yritetään validoida tokeni jokaisella tuetulla audience-arvolla
+    last_error = None
+    for audience in ALLOWED_AUDIENCES:
+        try:
+            id_info = id_token.verify_oauth2_token(
+                token,
+                google_requests.Request(),
+                audience=audience
+            )
+
+            if not id_info.get("email_verified"):
+                logger.warning(f"Autentikaatio hylätty: email_verified=false, sub={id_info.get('sub')}")
+                raise HTTPException(status_code=403, detail="Email domain must be verified.")
+
+            logger.info(f"Autentikaatio onnistui: sub={id_info['sub']}, aud={audience}")
+            return id_info["sub"]
+        except HTTPException:
+            raise
+        except Exception as e:
+            last_error = e
+            continue
+
+    logger.warning(f"Autentikaatio hylätty: tokeni ei kelpaa millekään audience-arvolle. Virhe: {last_error}")
+    raise HTTPException(status_code=401, detail="Authentication failed.")
 
 
 def get_object_by_id(obj_id: str) -> Optional[Dict[str, Any]]:
@@ -87,7 +123,7 @@ def get_object_by_id(obj_id: str) -> Optional[Dict[str, Any]]:
 def get_comments_count_by_actor(actor: str, object_id: str) -> int:
     """Laskee kuinka monta aktiviteettia tietty actor on tehnyt kyseiseen kohteeseen."""
     query = f"""
-        SELECT COUNT(*) AS c 
+        SELECT COUNT(*) AS c
         FROM `{PROJECT}.{SOCIAL_DATASET}.activities`
         WHERE actor = @actor AND object_id = @object_id
     """
@@ -108,7 +144,7 @@ def get_comments_count_by_actor(actor: str, object_id: str) -> int:
 def check_like_exists(actor: str, object_id: str) -> bool:
     """Tarkistaa onko käyttäjä jo tykännyt kohteesta sosiaalisessa kannassa."""
     query = f"""
-        SELECT 1 
+        SELECT 1
         FROM `{PROJECT}.{SOCIAL_DATASET}.likes`
         WHERE actor = @actor AND object_id = @object_id LIMIT 1
     """
@@ -131,24 +167,24 @@ def post_activity(activity: Dict[str, Any], authorization: Optional[str] = Heade
     # 1. Autentikoidaan pyyntö
     sub = verify_auth_token(authorization)
     actor_id = f"https://activitystreams.uutisseuranta.net/ap/users/{sub}"
-    
+
     # Korvataan pyynnön actor meidän generoimallamme turvallisella Google actor-id:llä
     activity["actor"] = actor_id
-    
+
     act_type = activity.get("type")
     act_object = activity.get("object")
-    
+
     if not act_type or not act_object:
         raise HTTPException(status_code=400, detail="Missing 'type' or 'object' in activity.")
 
     published_str = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
-    
+
     # 2. Reititetään aktiviteetin mukaan
     if act_type == "Like":
         obj_id = act_object if isinstance(act_object, str) else act_object.get("id")
         if not obj_id:
             raise HTTPException(status_code=400, detail="Missing object ID for Like.")
-            
+
         # Varmistetaan että kohde on olemassa
         target_obj = get_object_by_id(obj_id)
         if not target_obj or target_obj["deleted"]:
@@ -178,7 +214,7 @@ def post_activity(activity: Dict[str, Any], authorization: Optional[str] = Heade
             "published": published_str,
             "received_at": published_str
         }
-        
+
         likes_row = {
             "activity_id": act_id,
             "actor": actor_id,
@@ -199,10 +235,10 @@ def post_activity(activity: Dict[str, Any], authorization: Optional[str] = Heade
     elif act_type == "Create":
         if not isinstance(act_object, dict):
             raise HTTPException(status_code=400, detail="Object must be a valid JSON object.")
-            
+
         obj_type = act_object.get("type")
         in_reply_to = act_object.get("inReplyTo")
-        
+
         if obj_type != "Note":
             raise HTTPException(status_code=400, detail="Only 'Note' type objects are supported for Create.")
 
@@ -215,7 +251,7 @@ def post_activity(activity: Dict[str, Any], authorization: Optional[str] = Heade
             raise HTTPException(status_code=404, detail="Parent object not found or deleted.")
 
         parent_type = parent["object_json"].get("type")
-        
+
         thread_root = None
         if parent_type == "Article":
             # Taso 1 kommentti
@@ -225,11 +261,11 @@ def post_activity(activity: Dict[str, Any], authorization: Optional[str] = Heade
             # Varmistetaan ettei parent itse ole vastaus vastaukseen.
             parent_in_reply_to = parent["object_json"].get("inReplyTo")
             grandparent = get_object_by_id(parent_in_reply_to) if parent_in_reply_to else None
-            
+
             if grandparent and grandparent["object_json"].get("type") == "Note":
                 # Tämä olisi taso 3, hylätään!
                 raise HTTPException(status_code=400, detail="Reply thread depth limit exceeded (max 2 levels).")
-            
+
             # thread_root saadaan parentin thread_rootista
             thread_root = parent["object_json"].get("thread_root") or parent_in_reply_to
         else:
@@ -353,7 +389,7 @@ def post_activity(activity: Dict[str, Any], authorization: Optional[str] = Heade
     elif act_type == "Update":
         if not isinstance(act_object, dict):
             raise HTTPException(status_code=400, detail="Object must be a valid JSON object.")
-            
+
         obj_id = act_object.get("id")
         if not obj_id:
             raise HTTPException(status_code=400, detail="Missing object ID for Update.")
@@ -421,6 +457,17 @@ def post_activity(activity: Dict[str, Any], authorization: Optional[str] = Heade
         raise HTTPException(status_code=400, detail=f"Activity type '{act_type}' is not supported.")
 
 
-@app.get("/_health")
-def health_check():
+@app.get("/healthz")
+def liveness():
     return {"status": "ok"}
+
+
+@app.get("/readyz")
+def readiness():
+    try:
+        # Kevyt BigQuery-yhteyden tarkistus
+        bq_client.list_datasets(max_results=1)
+        return {"status": "ready"}
+    except Exception as e:
+        logger.error(f"Readiness-tarkistus epäonnistui: {e}")
+        raise HTTPException(status_code=503, detail="Database connection failed")

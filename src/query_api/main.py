@@ -4,13 +4,28 @@ import json
 import logging
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from fastapi import FastAPI, HTTPException, Query, Response
 from google.cloud import bigquery
 
+
 # Lokitus asetukset
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+class JsonFormatter(logging.Formatter):
+    def format(self, record):
+        log_entry = {
+            "severity": record.levelname,
+            "message": record.getMessage(),
+            "logger": record.name,
+            "time": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+        }
+        if record.exc_info:
+            log_entry["exception"] = self.formatException(record.exc_info)
+        return json.dumps(log_entry, ensure_ascii=False)
+
+handler = logging.StreamHandler()
+handler.setFormatter(JsonFormatter())
+logging.basicConfig(level=logging.INFO, handlers=[handler], force=True)
 logger = logging.getLogger("query-api")
 
 app = FastAPI(title="ActivityStreams Query API", version="1.0.0")
@@ -35,14 +50,14 @@ def get_total_items_cached(tags: List[str]) -> int:
     now = time.time()
     # Lajitellaan tagit jotta järjestys ei vaikuta avaimeen
     cache_key = ",".join(sorted(tags))
-    
+
     cached = _count_cache.get(cache_key)
     if cached and cached["expires"] > now:
         return cached["value"]
 
     # Lasketaan uusi arvo BigQuerystä
     query = f"""
-        SELECT COUNT(*) AS c 
+        SELECT COUNT(*) AS c
         FROM `{PROJECT}.{DATASET}.objects`
         WHERE deleted = FALSE
           AND EXISTS (
@@ -52,7 +67,7 @@ def get_total_items_cached(tags: List[str]) -> int:
     job_config = bigquery.QueryJobConfig(
         query_parameters=[bigquery.ArrayQueryParameter("search_tags", "STRING", tags)]
     )
-    
+
     try:
         results = list(bq_client.query(query, job_config=job_config).result())
         count = results[0]["c"] if results else 0
@@ -77,14 +92,14 @@ def get_outbox(
     # 1. Validoidaan tagit
     if not tag:
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail="At least one 'tag' query parameter is required."
         )
 
     # 2. Validoidaan n-parametri
     if n <= 0 or n > 500:
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail="Parameter 'n' must be between 1 and 500."
         )
 
@@ -92,7 +107,7 @@ def get_outbox(
     search_tags = [t.strip().lower() for t in tag if t.strip()]
     if not search_tags:
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail="Valid tags must be provided."
         )
 
@@ -102,7 +117,7 @@ def get_outbox(
     # Relevanssi lasketaan osuvien hakutagien lukumääränä.
     # Tasatilanteessa järjestetään: like_count DESC, updated DESC, published DESC, id ASC.
     query = f"""
-        SELECT 
+        SELECT
           id,
           source,
           published,
@@ -146,7 +161,7 @@ def get_outbox(
         try:
             # Muunnetaan JSON dictiksi jos tarpeen
             obj = json.loads(obj_json_raw) if isinstance(obj_json_raw, str) else obj_json_raw
-            
+
             # Injektoidaan tykkäykset ja uusin päivitys
             obj["likes"] = row["like_count"]
             if row["updated"]:
@@ -184,6 +199,17 @@ def get_outbox(
     )
 
 
-@app.get("/_health")
-def health_check():
+@app.get("/healthz")
+def liveness():
     return {"status": "ok"}
+
+
+@app.get("/readyz")
+def readiness():
+    try:
+        # Kevyt BigQuery-yhteyden tarkistus
+        bq_client.list_datasets(max_results=1)
+        return {"status": "ready"}
+    except Exception as e:
+        logger.error(f"Readiness-tarkistus epäonnistui: {e}")
+        raise HTTPException(status_code=503, detail="Database connection failed")
