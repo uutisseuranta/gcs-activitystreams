@@ -666,6 +666,36 @@ Jos MERGE-operaatio epäonnistuu: koko batch peruutetaan, `last_fetched_at` ei p
 
 ---
 
+## Deployment ja konfiguraation päivityskäytännöt
+
+Kaikki sovellukset (`query-api`, `write-api`) ja jobit (`rss-fetch-job` jne.) lukevat asetuksensa (kuten syötelistat ja API-avaimet) ympäristömuuttujista.
+
+### Nopea konfiguraation päivitys (ilman konttikäännöstä)
+
+Kun muutetaan pelkkiä konfiguraatioita (esim. lisätään tai poistetaan RSS-syöte `deploy/rss-fetch-job.env.yaml` -tiedostosta), **ei tule ajaa täyttä konttikäännöstä** (`deploy.sh`), koska koodi säilyy samana.
+
+Ympäristömuuttujat voidaan päivittää olemassa oleville Cloud Run -resursseille sekunneissa suoraan komentoriviltä:
+
+**Cloud Run Jobit (esim. rss-fetch-job):**
+```bash
+gcloud run jobs update rss-fetch-job \
+  --env-vars-file deploy/rss-fetch-job.env.yaml \
+  --region europe-north1 \
+  --project uutisseuranta-activitystreams
+```
+
+**Cloud Run Servicet (esim. write-api):**
+```bash
+gcloud run services update write-api \
+  --env-vars-file deploy/write-api.env.yaml \
+  --region europe-north1 \
+  --project uutisseuranta-activitystreams
+```
+
+Tämä säästää huomattavasti Cloud Build -käännösaikaa sekä välttää turhien Docker-kerrosten tallentamista rekisteriin.
+
+---
+
 ## Liittyy
 
 - [DESIGN_GUIDELINES.md](./DESIGN_GUIDELINES.md) — arkkitehtuuriperiaatteet

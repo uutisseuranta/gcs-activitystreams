@@ -367,6 +367,10 @@ def main() -> None:
     project = os.getenv("GCP_PROJECT")
     dataset = os.getenv("BQ_DATASET")
     timeout_str = os.getenv("REQUEST_TIMEOUT", "10")
+    # RSS_FEEDS luetaan suoraan ympäristömuuttujasta.
+    # HUOM: Jos syötelistaan tulee muutoksia (kuten uuden median lisäys tai poisto),
+    # Cloud Run Job voidaan päivittää suoraan ilman uutta konttikäännöstä (buildia) komennolla:
+    # gcloud run jobs update rss-fetch-job --env-vars-file deploy/rss-fetch-job.env.yaml
     rss_feeds_raw = os.getenv("RSS_FEEDS")
     domain = os.getenv("DOMAIN", "activitystreams.uutisseuranta.net")
 
