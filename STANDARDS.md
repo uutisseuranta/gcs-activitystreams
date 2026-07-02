@@ -1,79 +1,113 @@
-# STANDARDS.md — gcs-activitystreams normatiiviset vaatimukset
+# STANDARDS.md — Uutisseuranta Backend Standardit ja Datamalli
 
-> **Rajanveto:** Tämä tiedosto määrittää ulkoiset normatiiviset vaatimukset sellaisina kuin ne on julkaistu.
-> Se **miten** ne toteutetaan tässä projektissa on [TECHNICAL_DESIGN.md](./TECHNICAL_DESIGN.md):ssä.
->
-> Ristiin-viittaus: [patterns/STANDARDS.md](https://github.com/uutisseuranta/patterns/blob/main/STANDARDS.md) — frontend AS2-kenttäkartta.
+Tämä dokumentti määrittelee uutisseuranta-projektin backend-kerroksen (`gcs-activitystreams`) noudattamat standardit sekä API- ja tietokantatason datamallit.
 
 ---
 
-## 1. W3C ActivityStreams 2.0
+## 1. Ydinspeksit ja standardit
 
-Spesifikaatio: [https://www.w3.org/TR/activitystreams-core/](https://www.w3.org/TR/activitystreams-core/)
-
-### 1.1 Käytetyt kentät backend-vastauksessa
-
-Backend palauttaa nämä AS2-kentät API-vastauksessa:
-
-| Kenttä | Tyyppi | Pakollinen | Huomio |
-|--------|--------|------------|--------|
-| `@context` | IRI | Kyllä | Vakioarvo `"https://www.w3.org/ns/activitystreams"` |
-| `id` | IRI | Kyllä | Absoluuttinen URI; kaava: `https://uutisseuranta.fi/articles/{source}/{sha256(url)}` |
-| `type` | string | Kyllä | `Article`, `Note`, `Collection`, `OrderedCollection` |
-| `name` | string | Kyllä | Artikkelin otsikko |
-| `summary` | string | Suositeltu | Lyhyt kuvaus |
-| `content` | HTML string | Suositeltu | Käyttää sistä HTML-merkkiä |
-| `published` | xsd:dateTime | Kyllä | RFC 3339, UTC, Z-suffiksi |
-| `attributedTo` | Objekti | Kyllä | Keväyt viittaus: `{type, id, name}` — ei Actor-endpointia |
-| `tag` | Hashtag[] | Ei | Voikko-lemmat; `{type: "Hashtag", name: "#tag"}` |
-| `replies` | Collection | Ei | Backend **ei** palauta valmista `replies`-objektia — frontend kokoaa itse (ks. [patterns#50](https://github.com/uutisseuranta/patterns/issues/50)) |
-| `likes` | Collection | Ei | `{type: "Collection", totalItems: N}` |
-| `shares` | Collection | Ei | Laskentalogiikka tarkistettava (ks. [patterns#50](https://github.com/uutisseuranta/patterns/issues/50)) |
-
-### 1.2 Rajaukset
-
-**Ei Actor-objekteja:** Tässä projektissa ei toteuteta ActivityPub Actor -objekteja (`Person`, `Group`, `Organization`, `Service`) täysinä Actor-endpointeina. `attributedTo` sisältää keväyt viittauksen (`type` + `id` + `name`) ilman erillistä Actor-profiilisivua tai Webfinger-hakua.
-
-**Ei audience targeting -kenttiä:** `to`, `cc`, `bto`, `bcc` ja `audience`-kenttiä ei käytetä missään API-vastauksessa. Kaikki objektit oletetaan julkisiksi.
-
-**Ensisijainen tavoite AS2-yhteensopivuus:** ActivityPub-laajennukset ovat mahdollisia myöhemmin erillisinä projekteina — dokumentoidaan silloin hallittuina divergensseina STANDARDS.md:hen.
+| Kerros | Standardi / Spesifikaatio | Viite |
+|---|---|---|
+| Datamalli | **ActivityStreams 2.0** (JSON-LD) | [W3C ActivityStreams 2.0](https://www.w3.org/TR/activitystreams-core/) |
+| Aikaleimat | **RFC 3339** (ISO 8601 -profiili) | [RFC 3339](https://tools.ietf.org/html/rfc3339) |
+| Merkistö | **UTF-8** | [Unicode Standard](https://www.unicode.org/) |
 
 ---
 
-## 2. RFC 3339 — Aikaleimakentät
+## 2. Automaattisesti generoidut kenttätaulukot (JSON Schema)
 
-Spesifikaatio: [https://datatracker.ietf.org/doc/html/rfc3339](https://datatracker.ietf.org/doc/html/rfc3339)
+Seuraavat taulukot kuvaavat API-tason ActivityStreams-objektien tarkat kenttämääritykset. Ne on generoitu automaattisesti projektin JSON-schema -tiedostoista (`*.schema.json`) käyttäen `jsonschema-markdown` -työkalua.
 
-- Kaikki datetime-kentät **UTC**, **Z-suffiksi** pakollinen.
-- Muoto: `YYYY-MM-DDTHH:MM:SSZ` (esim. `2026-07-02T14:00:00Z`).
-- Ei aikavyöhykeoffsetteja (`+02:00` tms.) — kaikki UTC:ksi muunnettuna.
-- Kentät joihin vaatimus koskee: `published`, `updated` kaikissa AS2-objekteissa.
+### Article Schema
+Edustaa uutisartikkelia, blogipostausta tai muuta itsenäistä tekstituotetta.
+
+# ActivityStreams 2.0 Article
+
+Edustaa uutisartikkelia, blogipostausta tai muuta itsenäistä tekstituotetta.
+
+### Type: `object`
+
+| Property | Type | Required | Possible values | Deprecated | Default | Description | Examples |
+| -------- | ---- | -------- | --------------- | ---------- | ------- | ----------- | -------- |
+| @context | `string` | ✅ | string |  |  | JSON-LD konteksti, tyypillisesti https://www.w3.org/ns/activitystreams |  |
+| type | `string` | ✅ | string |  |  | Objektin tyyppi, arvon on oltava 'Article' |  |
+| id | `string` | ✅ | string |  |  | Objektin yksikäsitteinen tunniste (IRI/URI) |  |
+| name | `string` | ✅ | string |  |  | Artikkelin otsikko tai nimi |  |
+| url | `string` | ✅ | string |  |  | Alkuperäisen artikkelin verkko-osoite (URL) |  |
+| published | `string` | ✅ | string |  |  | Julkaisuajankohta RFC 3339 -muodossa |  |
+| summary | `string` |  | string |  |  | Artikkelin yhteenveto tai lyhyt katkelma |  |
+| content | `string` |  | string |  |  | Artikkelin HTML-muotoiltu pääsisältö |  |
+| updated | `string` |  | string |  |  | Viimeisin päivitysajankohta RFC 3339 -muodossa |  |
+| attributedTo | `string` |  | string |  |  | Artikkelin tekijä tai julkaisija (esim. uutislähteen nimi) |  |
+
 
 ---
 
-## 3. GDPR — Henkilötietojen käsittely
+Markdown generated with [jsonschema-markdown](https://github.com/elisiariocouto/jsonschema-markdown).
 
-Säädös: EU 2016/679, [https://eur-lex.europa.eu/eli/reg/2016/679/oj](https://eur-lex.europa.eu/eli/reg/2016/679/oj)
+### Note Schema
+Edustaa lyhyttä tekstikommenttia tai uutisartikkelin vastausviestiä.
 
-### Raakavastauksessa ei henkilötietoja
+# ActivityStreams 2.0 Note
 
-Backend ei palauta henkilötietoja raakana API-vastauksessa:
-- Ei sähköpostiosoitteita
-- Ei IP-osoitteita
-- Ei tunnistettavia käyttäjäprofiilidataa
+Edustaa lyhyttä tekstikommenttia tai uutisartikkelin vastausviestiä.
 
-### Anonymisointi- ja poistovaatimukset
+### Type: `object`
 
-- Anonymisointi: toteutus määritelty erikseen (ks. [#37](https://github.com/uutisseuranta/gcs-activitystreams/issues/37))
-- Poisto-oikeus (right to erasure, Art. 17): toteutus määritelty erikseen (ks. [#37](https://github.com/uutisseuranta/gcs-activitystreams/issues/37))
-- Tietojen säilytysaika: määriteltävä ennen tuotantokäyttöä
+| Property | Type | Required | Possible values | Deprecated | Default | Description | Examples |
+| -------- | ---- | -------- | --------------- | ---------- | ------- | ----------- | -------- |
+| @context | `string` | ✅ | string |  |  | JSON-LD konteksti, tyypillisesti https://www.w3.org/ns/activitystreams |  |
+| type | `string` | ✅ | string |  |  | Objektin tyyppi, arvon on oltava 'Note' |  |
+| id | `string` | ✅ | string |  |  | Kommentin yksikäsitteinen tunniste (IRI/URI) |  |
+| content | `string` | ✅ | string |  |  | Kommentin leipäteksti HTML- tai plain text -muodossa |  |
+| published | `string` | ✅ | string |  |  | Julkaisuajankohta RFC 3339 -muodossa |  |
+| attributedTo | `string` | ✅ | string |  |  | Kommentin kirjoittajan tunniste (esim. käyttäjän sub-id) |  |
+| inReplyTo | `string` | ✅ | string |  |  | Pääartikkelin tai ylemmän kommentin tunniste (id/IRI), johon tämä viesti vastaa |  |
+
 
 ---
 
-## Viitteet
+Markdown generated with [jsonschema-markdown](https://github.com/elisiariocouto/jsonschema-markdown).
 
-- W3C ActivityStreams 2.0: [https://www.w3.org/TR/activitystreams-core/](https://www.w3.org/TR/activitystreams-core/)
-- W3C ActivityStreams 2.0 Vocabulary: [https://www.w3.org/TR/activitystreams-vocabulary/](https://www.w3.org/TR/activitystreams-vocabulary/)
-- RFC 3339: [https://datatracker.ietf.org/doc/html/rfc3339](https://datatracker.ietf.org/doc/html/rfc3339)
-- GDPR: [https://eur-lex.europa.eu/eli/reg/2016/679/oj](https://eur-lex.europa.eu/eli/reg/2016/679/oj)
-- Frontend kenttäkartta: [patterns/STANDARDS.md](https://github.com/uutisseuranta/patterns/blob/main/STANDARDS.md)
+### OrderedCollection Schema
+Edustaa järjestettyä listaa ActivityStreams-objekteista, kuten uutisvirrasta tai outbox-endpointista.
+
+# ActivityStreams 2.0 OrderedCollection
+
+Edustaa järjestettyä listaa ActivityStreams-objekteista, kuten uutisvirrasta tai outbox-endpointista.
+
+### Type: `object`
+
+| Property | Type | Required | Possible values | Deprecated | Default | Description | Examples |
+| -------- | ---- | -------- | --------------- | ---------- | ------- | ----------- | -------- |
+| @context | `string` | ✅ | string |  |  | JSON-LD konteksti, tyypillisesti https://www.w3.org/ns/activitystreams |  |
+| type | `string` | ✅ | string |  |  | Objektin tyyppi, arvon on oltava 'OrderedCollection' |  |
+| id | `string` | ✅ | string |  |  | Kokoelman yksikäsitteinen tunniste (IRI/URI) |  |
+| totalItems | `integer` | ✅ | integer |  |  | Kokoelmassa olevien objektien kokonaismäärä |  |
+| orderedItems | `array` | ✅ | object |  |  | Kokoelman sisältämät objektit tai niiden ID:t järjestettynä |  |
+
+
+---
+
+Markdown generated with [jsonschema-markdown](https://github.com/elisiariocouto/jsonschema-markdown).
+
+### Hashtag Schema
+Edustaa artikkelille tai Note-objektille annettua aihetunnistetta tai avainsanaa.
+
+# ActivityStreams 2.0 Hashtag
+
+Edustaa artikkelille tai Note-objektille annettua aihetunnistetta tai avainsanaa.
+
+### Type: `object`
+
+| Property | Type | Required | Possible values | Deprecated | Default | Description | Examples |
+| -------- | ---- | -------- | --------------- | ---------- | ------- | ----------- | -------- |
+| type | `string` | ✅ | string |  |  | Objektin tyyppi, arvon on oltava 'Hashtag' |  |
+| name | `string` | ✅ | string |  |  | Aihetunnisteen teksti (esim. '#politiikka' tai 'tekoäly') |  |
+| href | `string` |  | string |  |  | Tunnisteeseen liittyvä haku- tai suodatuslinkki (URL) |  |
+
+
+---
+
+Markdown generated with [jsonschema-markdown](https://github.com/elisiariocouto/jsonschema-markdown).
+

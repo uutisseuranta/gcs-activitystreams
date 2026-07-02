@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ActivityStreams 2.0 Hashtag",
+  "description": "Edustaa artikkelille tai Note-objektille annettua aihetunnistetta tai avainsanaa.",
+  "type": "object",
+  "properties": {
+    "type": {
+      "type": "string",
+      "description": "Objektin tyyppi, arvon on oltava 'Hashtag'"
+    },
+    "href": {
+      "type": "string",
+      "description": "Tunnisteeseen liittyvä haku- tai suodatuslinkki (URL)"
+    },
+    "name": {
+      "type": "string",
+      "description": "Aihetunnisteen teksti (esim. '#politiikka' tai 'tekoäly')"
+    }
+  },
+  "required": ["type", "name"]
+}

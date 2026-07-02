@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ActivityStreams 2.0 OrderedCollection",
+  "description": "Edustaa järjestettyä listaa ActivityStreams-objekteista, kuten uutisvirrasta tai outbox-endpointista.",
+  "type": "object",
+  "properties": {
+    "@context": {
+      "type": "string",
+      "description": "JSON-LD konteksti, tyypillisesti https://www.w3.org/ns/activitystreams"
+    },
+    "type": {
+      "type": "string",
+      "description": "Objektin tyyppi, arvon on oltava 'OrderedCollection'"
+    },
+    "id": {
+      "type": "string",
+      "description": "Kokoelman yksikäsitteinen tunniste (IRI/URI)"
+    },
+    "totalItems": {
+      "type": "integer",
+      "description": "Kokoelmassa olevien objektien kokonaismäärä"
+    },
+    "orderedItems": {
+      "type": "array",
+      "description": "Kokoelman sisältämät objektit tai niiden ID:t järjestettynä",
+      "items": {
+        "type": "object"
+      }
+    }
+  },
+  "required": ["@context", "type", "id", "totalItems", "orderedItems"]
+}
