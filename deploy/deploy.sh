@@ -64,14 +64,13 @@ if [ "$TYPE" = "job" ]; then
     --service-account "$SA_EMAIL" \
     --project "$PROJECT"
 else
-  echo "Deploying Cloud Run Service..."
   gcloud run deploy "$SERVICE" \
     --image "$IMAGE" \
     --region "$REGION" \
     --env-vars-file "$ENV_FILE" \
     --service-account "$SA_EMAIL" \
     --project "$PROJECT" \
-    --no-allow-unauthenticated
+    --allow-unauthenticated
 fi
 
 echo "Deploy completed successfully!"

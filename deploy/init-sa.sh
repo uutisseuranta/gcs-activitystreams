@@ -39,4 +39,9 @@ gcloud projects add-iam-policy-binding "$PROJECT" \
   --role="roles/bigquery.user" \
   --quiet >/dev/null
 
+# Luodaan sosiaalinen BigQuery dataset jos ei ole olemassa
+echo "Varmistetaan sosiaalisen datasetin activitystreams_social olemassaolo..."
+bq show --project_id="$PROJECT" "activitystreams_social" &>/dev/null || \
+  bq mk --project_id="$PROJECT" --location=europe-north1 --dataset "activitystreams_social"
+
 echo "Palvelutili alustettu ja valtuutettu onnistuneesti!"
