@@ -4,6 +4,25 @@ Nämä periaatteet ohjaavat kaikkia arkkitehtuuripäätöksiä. Viittaa tähän 
 
 ---
 
+## Zero Trust — always check, always verify
+
+Kaikki kirjoitusoperaatiot vaativat autentikaation riippumatta siitä mistä pyyntö tulee. Ei luoteta verkkorajoihin, IP-osoitteisiin eikä aiempaan sessioon. Jokainen pyyntö validoidaan erikseen.
+
+| Endpoint | Autentikaatio | Perustelu |
+|---|---|---|
+| `GET /ap/outbox` | Ei — julkinen avoin data | Lukuoperaatio, ei kirjoitusta |
+| `POST /ap/scrape` | ✅ Google `id_token` pakollinen | Kirjoittaa `activitystreams.objects`-tauluun |
+| `POST /ap/activities` | ✅ Google `id_token` pakollinen | Kirjoittaa `activitystreams_social`-datasettiin |
+
+Backend validoi tokenin **aina** — se ei luota siihen että UI on jo tarkistanut kirjautumisen. UI:n vastuulla on näyttää kirjautumiskehotus ennen pyyntöä, mutta backend hylkää pyynnön ilman kelvollista tokenia riippumatta UI:n tilasta.
+
+```
+401 Unauthorized  — Authorization-otsake puuttuu tai token ei kelpaa
+403 Forbidden     — token kelvollinen mutta ei oikeutta operaatioon
+```
+
+---
+
 ## Asiat riitelevät, ei ihmiset
 
 Tässä palvelussa sisältö on toimijana, ei henkilö.
@@ -176,3 +195,5 @@ Ei `next`, ei `prev`, ei `cursor`, ei `first`. `totalItems` kertoo clientille pa
 - #10 Outbox-endpoint
 - #11 Tykkäyslaskuri (`likes:N`-tagi)
 - #13 Delete-toiminto
+- #19 Gmail SSO → id_token-validointi
+- #23 OG-scraper
