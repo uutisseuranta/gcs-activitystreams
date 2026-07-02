@@ -1,4 +1,3 @@
-# src/og_enrichment_job/main.py
 import datetime
 import json
 import logging
@@ -12,13 +11,19 @@ from google.cloud import bigquery
 from shared import og_parser
 
 
-# Lokitus
+# JsonFormatter toistuu identtisenä og_enrichment_job-, og_scraper- ja query_api-palveluissa.
+# Tämä on tietoinen arkkitehtuuripäätös: Cloud Run -palvelut ovat toisistaan riippumattomia
+# deployable-yksikköjä. Jakaminen shared/-moduuliin lisäisi build-riippuvuuden ilman selvää hyötyä,
+# koska formatter on yksinkertainen (~10 riviä) eikä muutu usein.
+# Päätös kirjattu: TECHNICAL_DESIGN.md §4 "Suunnittelu- ja kehityskäytännöt".
 class JsonFormatter(logging.Formatter):
     def format(self, record):
+        # Cloud Logging tunnistaa 'severity'-kentän automaattisesti logtasoksi
         log_entry = {
             "severity": record.levelname,
             "message": record.getMessage(),
             "logger": record.name,
+            # ISO 8601 UTC — Cloud Logging edellyttää Z-päätettä (ei +00:00)
             "time": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
         }
         if record.exc_info:
@@ -32,12 +37,12 @@ logger = logging.getLogger("og-enrichment-job")
 
 
 def main() -> None:
-    # Luetaan ympäristömuuttujat
+    # Luetaan ympäristömuuttujat — kaikki konfiguroitavissa Cloud Run -ympäristömuuttujina
     project = os.getenv("GCP_PROJECT")
     dataset = os.getenv("BQ_DATASET", "activitystreams")
     batch_size_str = os.getenv("BATCH_SIZE", "100")
     timeout_str = os.getenv("HTTP_TIMEOUT_S", "10")
-    max_bytes_str = os.getenv("MAX_RESPONSE_BYTES", "2097152")
+    max_bytes_str = os.getenv("MAX_RESPONSE_BYTES", "2097152")  # 2 MB oletus
 
     if not project:
         logger.critical("Virhe: GCP_PROJECT ympäristömuuttuja on pakollinen.")
@@ -62,7 +67,8 @@ def main() -> None:
 
     bq_client = bigquery.Client(project=project)
 
-    # 1. Haetaan rikastamattomat rivit
+    # 1. Haetaan rikastamattomat rivit — vain RSS-lähteestä, ei scraped-lähteistä
+    # (scraped-artikkelit ovat jo rikastettuja og_scraper-palvelussa tallennuksen yhteydessä)
     query = f"""
         SELECT id, object_json
         FROM `{project}.{dataset}.objects`
@@ -90,7 +96,8 @@ def main() -> None:
 
     for row in rows:
         row_id = row["id"]
-        # BigQuery client voi palauttaa object_json joko dictinä tai JSON-merkkijonona versiosta riippuen
+        # BigQuery Python -asiakas voi palauttaa JSON-kentän joko dictinä (uudempi SDK)
+        # tai JSON-merkkijonona (vanhempi SDK/schema). Käsitellään molemmat tapaukset.
         obj_json_raw = row["object_json"]
         if isinstance(obj_json_raw, str):
             try:
@@ -107,7 +114,7 @@ def main() -> None:
         url = object_json.get("url")
         if not url:
             logger.warning(f"Rivi {row_id} ohitetaan: url-kenttä puuttuu.")
-            # Merkitään kuitenkin enriched = TRUE virheellä, jotta sitä ei yritetä ikuisesti
+            # Merkitään enriched=TRUE virheellä — estää äärettömän uudelleenyrityksen
             rows_to_load.append({
                 "id": row_id,
                 "object_json": json.dumps(object_json),
@@ -116,7 +123,7 @@ def main() -> None:
             })
             continue
 
-        # 2. Tarkistetaan robots.txt
+        # 2. Tarkistetaan robots.txt — kunnioitetaan sivuston crawling-kieltoja
         if not og_parser.robots_check(url):
             logger.warning(f"robots.txt estää URL:n: {url} (id: {row_id})")
             rows_to_load.append({
@@ -132,29 +139,29 @@ def main() -> None:
             html_content = og_parser.fetch_url_stream(url, timeout=timeout, max_bytes=max_bytes)
             metadata = og_parser.parse_og_metadata(html_content, url)
 
-            # 4. Rikastetaan kentät
-            # name (pidempi voittaa, trim ennen vertailua)
+            # 4. Rikastetaan kentät — sovelletaan prioriteettisäännöt:
+            # name: pidempi teksti voittaa (RSS-otsikko vs. OG-title)
             enriched_name = og_parser.longer(object_json.get("name"), metadata.get("title"))
             if enriched_name:
                 object_json["name"] = enriched_name
 
-            # summary (pidempi voittaa, trim ennen vertailua)
+            # summary: pidempi voittaa (RSS-kuvaus vs. OG-description)
             enriched_summary = og_parser.longer(object_json.get("summary"), metadata.get("description"))
             if enriched_summary:
                 object_json["summary"] = enriched_summary
 
-            # image (OG voittaa aina jos saatavilla)
+            # image: OG voittaa aina jos saatavilla (OG-kuva on eksplisiittisesti valittu)
             if metadata.get("image"):
                 object_json["image"] = {
                     "type": "Image",
                     "url": metadata["image"]
                 }
 
-            # published (säilytetään nykyinen, täydennetään jos puuttuu)
+            # published: säilytetään RSS-arvo, täydennetään OG:lla vain jos puuttuu
             if not object_json.get("published") and metadata.get("published_time"):
                 object_json["published"] = metadata["published_time"]
 
-            # updated (OG modified_time voittaa jos saatavilla)
+            # updated: OG modified_time voittaa aina jos saatavilla
             if metadata.get("modified_time"):
                 object_json["updated"] = metadata["modified_time"]
 
@@ -167,6 +174,7 @@ def main() -> None:
             })
 
         except PermissionError as pe:
+            # og_parser.fetch_url_stream nostaa PermissionErrorin SSRF-validointivirheistä
             logger.warning(f"SSRF-validointivirhe haettaessa {url}: {pe}")
             rows_to_load.append({
                 "id": row_id,
@@ -183,10 +191,14 @@ def main() -> None:
                 "og_enriched_error": f"Fetch/Parse error: {e}"
             })
 
-    # 5. Päivitetään rikastetut ja virheelliset rivit BigQueryyn temp-taulun kautta
+    # 5. Päivitetään BigQueryyn temp-taulu + MERGE -patternilla
+    # Syy temp-tauluun: BigQuery ei tue suoraa batch-UPDATE:a JSON-arvoilla.
+    # load_table_from_json on tehokas ja atominen yhden erän sisällä.
+    # MERGE korvaa vanhat rivit uusilla — idempotenttisuus taattu ON T.id = S.id -ehdolla.
     if not rows_to_load:
         return
 
+    # Uniikki UUID-suffiksi estää race conditionin rinnakkaisissa ajoissa
     temp_table_id = f"{project}.{dataset}.objects_enrich_temp_{uuid.uuid4().hex}"
     schema = [
         bigquery.SchemaField("id", "STRING", mode="REQUIRED"),
@@ -221,6 +233,7 @@ def main() -> None:
         logger.critical(f"Rikastustulosten tallennus epäonnistui: {e}")
         sys.exit(1)
     finally:
+        # Siivotaan temp-taulu aina — myös virheen sattuessa
         logger.info(f"Poistetaan väliaikaistaulu {temp_table_id}")
         bq_client.delete_table(temp_table_id, not_found_ok=True)
 
