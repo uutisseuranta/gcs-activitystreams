@@ -57,6 +57,81 @@ Huom: `likes-and-updated-job` korvaa aiemmat erilliset `likes-sync-job` ja `acti
 
 ---
 
+## Operatiivinen malli: fetch-ikkuna, config ja retry
+
+Tämän luvun tarkoitus on kuvata, miten jobit säilyttävät jatkuvan fetch-ikkunan ilman aukkoja ja miten virhetilanteet käsitellään niin, etteivät ne katkaise dataa.
+
+### Config-taulu: avaimet ja cold start
+
+Config-taulu on kriittinen komponentti: RSS-, Ahjo- ja HRI-jobien fetch-ikkunan jatkuvuus riippuu siitä kokonaan. Ilman oikeaa `last_fetched_at`-arvoa job joko hakee kaksoiskappaleet tai jättää aukon dataan.
+
+```sql
+CREATE TABLE activitystreams.config (
+  key           STRING    NOT NULL,
+  value         STRING    NOT NULL,
+  updated_at    TIMESTAMP NOT NULL,
+  updated_by    STRING    OPTIONS(description='Cloud Run Job -palvelun nimi, esim. rss-fetch-job')
+);
+```
+
+#### Kaikki avain-arvo-parit
+
+| key | Arvomuoto | Kirjoittaa | Milloin |
+|---|---|---|---|
+| `rss.{source}.last_fetched_at` | ISO 8601 timestamp | `rss-fetch-job` | Onnistuneen ajon lopussa |
+| `ahjo.last_fetched_at` | ISO 8601 timestamp | `ahjo-fetch-job` | Onnistuneen ajon lopussa |
+| `hri.last_fetched_at` | ISO 8601 timestamp | `hri-fetch-job` | Onnistuneen ajon lopussa |
+| `valtioneuvosto.rss_url` | URL-merkkijono | `rss-fetch-job` | Kun autodiscovery löytää uuden URL:n |
+
+**Lukuoikeudet:** Kaikilla fetch-jobeilla on `roles/bigquery.dataViewer` config-tauluun.
+
+**Kirjoitusoikeudet:** Jokainen job kirjoittaa vain omia avaimiaan. Oikeus: `roles/bigquery.dataEditor` (tai hienojakoisempi rivi-tason käytäntö tarvittaessa).
+
+#### Cold start — mitä tapahtuu kun avain puuttuu
+
+| Tilanne | Käyttäytyminen |
+|---|---|
+| `last_fetched_at` puuttuu (ensimmäinen ajo) | Job hakee kiinteältä fallback-aikaikkunalta (esim. `-24h`) ja kirjoittaa arvon config-tauluun onnistuneen ajon jälkeen |
+| `valtioneuvosto.rss_url` puuttuu | `rss-fetch-job` ajaa autodiscoveryn, tallentaa löydetyn URL:n ja jatkaa normaalisti |
+| config-taulu on kokonaan tyhjä | Kaikki jobit käyttävät omaa fallback-ikkunaansa — data ei katkea, mutta ensimmäinen ajo saattaa hakea päällekkäistä dataa |
+
+Config-taulun rivejä ei koskaan poisteta — vain päivitetään (`MERGE UPDATE`). Tämä varmistaa että avain on aina olemassa toisen ajon jälkeen.
+
+### Virheenkäsittely ja retry-strategia
+
+`config`-taulun `last_fetched_at`-arvo päivitetään **ainoastaan kun koko ajo on suoritettu onnistuneesti**. Epäonnistunut ajo ei päivitä arvoa — seuraava ajo käyttää edellistä onnistunutta ajankohtaa fetch-ikkunana, jolloin yksikään artikkeli ei jää välistä.
+
+HTTP-virheiden retry-strategia:
+
+| HTTP-statuskoodi | Toiminto |
+|---|---|
+| `2xx` | Jatketaan normaalisti |
+| `429 Too Many Requests` | Odotetaan `Retry-After`-otsakkeen mukainen aika (tai 60 s), max 3 yritystä |
+| `5xx` | Eksponentiaalinen backoff: 30 s, 5 min, 15 min. Max 3 yritystä. |
+| `404 Not Found` | Kirjataan lokiin, jatketaan muiden lähteiden käsittelyä. Ei retryä. |
+| Connection error / timeout | Sama kuin `5xx`. |
+
+BigQuery MERGE-kirjoitusvirheissä koko batch peruutetaan, `last_fetched_at` ei päivy, virhe kirjataan lokiin, ja Cloud Run Job palauttaa exit code `1`.
+
+---
+
+## Jobit ja palvelut: yhteenvetotaulukko
+
+| Job / palvelu | Tyyppi | Cron / endpoint | Kirjoittaa | Vastuu |
+|---|---|---|---|---|
+| rss-fetch-job | Cloud Run Job | `0 * * * *` | `activitystreams.objects` | Uutissyötteet (RSS) |
+| ahjo-fetch-job | Cloud Run Job | `0 3 * * *` | `activitystreams.objects` | OpenAhjo-päätökset |
+| hri-fetch-job | Cloud Run Job | `30 3 * * *` | `activitystreams.objects` | HRI-datasetit |
+| voikko-enrich-job | Cloud Run Job | `30 * * * *` | `activitystreams.objects.tags*` | Lemmatisoidut tagit (Voikko) |
+| likes-and-updated-job | Cloud Run Job | `*/15 * * * *` | `activitystreams.objects.like_count, updated` | Tykkäyslaskuri + updated |
+| query-api | Cloud Run Service | `GET /ap/outbox` | — | AS2 outbox, lukupään API |
+| og-scraper | Cloud Run Service | `POST /ap/scrape` | `activitystreams.objects` | OG-scraper valikoiduille domaineille |
+| write-api | Cloud Run Service | `POST /ap/activities` | `activitystreams_social.*` | Käyttäjäaktiviteetit (kommentit, tykkäykset) |
+
+\* Voikko-job on `tags`-sarakkeen omistaja; muut jobit eivät koskaan kirjoita `tags`-kenttää.
+
+---
+
 ## Autentikaatio ja valtuutus
 
 ### Defense in depth -malli (#25)
@@ -231,42 +306,6 @@ CREATE TABLE activitystreams_social.likes (
 PARTITION BY DATE(published)
 CLUSTER BY object_id, actor;
 ```
-
-### `activitystreams.config` — dynaaminen konfiguraatio
-
-Config-taulu on kriittinen komponentti: RSS-, Ahjo- ja HRI-jobien fetch-ikkunan jatkuvuus riippuu siitä kokonaan. Ilman oikeaa `last_fetched_at`-arvoa job joko hakee kaksoiskappaleet tai jättää aukon dataan.
-
-```sql
-CREATE TABLE activitystreams.config (
-  key           STRING    NOT NULL,
-  value         STRING    NOT NULL,
-  updated_at    TIMESTAMP NOT NULL,
-  updated_by    STRING    OPTIONS(description='Cloud Run Job -palvelun nimi, esim. rss-fetch-job')
-);
-```
-
-#### Kaikki avain-arvo-parit
-
-| key | Arvomuoto | Kirjoittaa | Milloin |
-|---|---|---|---|
-| `rss.{source}.last_fetched_at` | ISO 8601 timestamp | `rss-fetch-job` | Onnistuneen ajon lopussa |
-| `ahjo.last_fetched_at` | ISO 8601 timestamp | `ahjo-fetch-job` | Onnistuneen ajon lopussa |
-| `hri.last_fetched_at` | ISO 8601 timestamp | `hri-fetch-job` | Onnistuneen ajon lopussa |
-| `valtioneuvosto.rss_url` | URL-merkkijono | `rss-fetch-job` | Kun autodiscovery löytää uuden URL:n |
-
-**Lukuoikeudet:** Kaikilla fetch-jobeilla on `roles/bigquery.dataViewer` config-tauluun.
-
-**Kirjoitusoikeudet:** Jokainen job kirjoittaa vain omia avaimiaan. Oikeus: `roles/bigquery.dataEditor` (tai hienojakoisempi rivi-tason käytäntö tarvittaessa).
-
-#### Cold start — mitä tapahtuu kun avain puuttuu
-
-| Tilanne | Käyttäytyminen |
-|---|---|
-| `last_fetched_at` puuttuu (ensimmäinen ajo) | Job hakee kiinteältä fallback-aikaikkunalta (esim. `-24h`) ja kirjoittaa arvon config-tauluun onnistuneen ajon jälkeen |
-| `valtioneuvosto.rss_url` puuttuu | `rss-fetch-job` ajaa autodiscoveryn, tallentaa löydetyn URL:n ja jatkaa normaalisti |
-| config-taulu on kokonaan tyhjä | Kaikki jobit käyttävät omaa fallback-ikkunaansa — data ei katkea, mutta ensimmäinen ajo saattaa hakea päällekkäistä dataa |
-
-Config-taulun rivejä ei koskaan poisteta — vain päivitetään (`MERGE UPDATE`). Tämä varmistaa että avain on aina olemassa toisen ajon jälkeen.
 
 ### `id`-kentän kaava lähteittäin
 
@@ -654,29 +693,18 @@ Prioriteetti: **matala** — toteutetaan vasta kun jokin RSS-lähde oikeasti aih
 
 ---
 
-## Virheenkäsittely ja retry-logiikka
+## Logging ja monitoring (#17)
 
-Kaikissa Cloud Run Job -ajoissa noudatetaan yhtenäistä virheenkäsittelymallia.
+Kaikki Cloud Run -palvelut ja jobit logittavat tapahtumansa Google Cloud Loggingiin (structured logging).
 
-### `last_fetched_at` — päivitetään vain onnistuneesta ajosta
+- **Logitasot:** `INFO` normaaleille suorituksille, `WARNING` toipuville virheille (onnistunut retry), `ERROR` pysyville virheille (ajo epäonnistuu, exit code ≠ 0).
+- **Jobien seuranta:** jokainen Cloud Run Job -ajo kirjoittaa jobin nimen, ajon tunnisteen ja lopputuloksen (`success` / `failure`) lokiin. Virheolosuhteissa lokirivi sisältää myös `last_fetched_at`-arvon ja HTTP-/BigQuery-virhekoodin.
+- **Alertit:** Cloud Monitoring -hälytykset asetetaan seuraaviin tilanteisiin:
+  - sama job epäonnistuu vähintään N kertaa peräkkäin (esim. `rss-fetch-job` 3× exit code `1`),
+  - HTTP 5xx -virheiden määrä ylittää konfiguroidun rajan tietylle palvelulle (esim. `query-api`),
+  - latenssi kasvaa merkittävästi normaalista (p95:n kasvu).
 
-`config`-taulun `last_fetched_at`-arvo päivitetään **ainoastaan kun koko ajo on suoritettu onnistuneesti**. Epäonnistunut ajo ei päivitä arvoa — seuraava ajo käyttää edellistä onnistunutta ajankohtaa fetch-ikkunana, jolloin yksikään artikkeli ei jää välistä.
-
-### Retry-strategia HTTP-virheille
-
-| HTTP-statuskoodi | Toiminto |
-|---|---|
-| `2xx` | Jatketaan normaalisti |
-| `429 Too Many Requests` | Odotetaan `Retry-After`-otsakkeen mukainen aika (tai 60 s), max 3 yritystä |
-| `5xx` | Eksponentiaalinen backoff: 30 s, 5 min, 15 min. Max 3 yritystä. |
-| `404 Not Found` | Kirjataan lokiin, jatketaan muiden lähteiden käsittelyä. Ei retryä. |
-| Connection error / timeout | Sama kuin `5xx`. |
-
-RSS-job ei kaada koko ajoa yksittäisen lähteen virheestä — virhe kirjataan lokiin, ajo jatkuu seuraavaan lähteeseen.
-
-### BigQuery-kirjoitusvirhe
-
-Jos MERGE-operaatio epäonnistuu: koko batch peruutetaan, `last_fetched_at` ei päivy, virhe kirjataan lokiin, Cloud Run Job palauttaa exit code `1`.
+Lokien avulla voidaan jäljittää yksittäisten virheiden juurisyy ja vahvistaa, että `last_fetched_at` ei ole päivittynyt epäonnistuneen ajon aikana.
 
 ---
 
