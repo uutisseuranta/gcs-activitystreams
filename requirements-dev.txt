@@ -1,0 +1,2 @@
+# Riippuvuudet kehitystyökaluja varten
+jsonschema-markdown>=0.3.0

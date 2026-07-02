@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ActivityStreams 2.0 Article",
+  "description": "Edustaa uutisartikkelia, blogipostausta tai muuta itsenäistä tekstituotetta.",
+  "type": "object",
+  "properties": {
+    "@context": {
+      "type": "string",
+      "description": "JSON-LD konteksti, tyypillisesti https://www.w3.org/ns/activitystreams"
+    },
+    "type": {
+      "type": "string",
+      "description": "Objektin tyyppi, arvon on oltava 'Article'"
+    },
+    "id": {
+      "type": "string",
+      "description": "Objektin yksikäsitteinen tunniste (IRI/URI)"
+    },
+    "name": {
+      "type": "string",
+      "description": "Artikkelin otsikko tai nimi"
+    },
+    "summary": {
+      "type": "string",
+      "description": "Artikkelin yhteenveto tai lyhyt katkelma"
+    },
+    "content": {
+      "type": "string",
+      "description": "Artikkelin HTML-muotoiltu pääsisältö"
+    },
+    "url": {
+      "type": "string",
+      "description": "Alkuperäisen artikkelin verkko-osoite (URL)"
+    },
+    "published": {
+      "type": "string",
+      "description": "Julkaisuajankohta RFC 3339 -muodossa"
+    },
+    "updated": {
+      "type": "string",
+      "description": "Viimeisin päivitysajankohta RFC 3339 -muodossa"
+    },
+    "attributedTo": {
+      "type": "string",
+      "description": "Artikkelin tekijä tai julkaisija (esim. uutislähteen nimi)"
+    }
+  },
+  "required": ["@context", "type", "id", "name", "url", "published"]
+}
