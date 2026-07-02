@@ -1,18 +1,21 @@
 [tool.ruff]
-# Kohdepolku ja tiedostot
+# Lähdekoodin sijainti — Ruff etsii Python-tiedostot täältä
 src = ["src"]
+# Rivitysrajan normi; 160 on salliva mutta OK datapipeline-koodille (pitkät BigQuery-kyselyt)
 line-length = 160
+# Kohde-Python-versio — vastaa Cloud Run -ympäristön Python-versiota
 target-version = "py311"
 
 [tool.ruff.lint]
 # Valitut sääntöryhmät tyylille ja tietoturvalle
 select = [
-    "E",   # pycodestyle (virheet)
-    "W",   # pycodestyle (varoitukset)
-    "F",   # pyflakes (perusvirheet)
-    "I",   # isort (importtien järjestys)
-    "B",   # flake8-bugbear (yleiset koodivirheet/suunnitteluongelmat)
-    "S",   # flake8-bandit (tietoturvatarkistukset / SAST)
+    "E",   # pycodestyle: PEP8-virheet (sisennysongelmat, ylimääräiset välilyönnit)
+    "W",   # pycodestyle: PEP8-varoitukset (rivinpäätösongelmat)
+    "F",   # pyflakes: kriittiset koodivirheet (käyttämättömät importit, määrittelemättömät nimet)
+    "I",   # isort: importtijärjestys (stdlib → third-party → local)
+    "B",   # flake8-bugbear: hiljaiset suunnitteluvirheet (esim. mutatoituva oletusparametri)
+    "S",   # flake8-bandit: SAST-tietoturvatarkistukset (kovakoodatut salasanat, subprocess-käyttö)
+    # HUOM: "ANN" (type annotations) jätetty pois tarkoituksella — lisätään myöhemmin tarvittaessa
 ]
 
 ignore = [
@@ -26,5 +29,5 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 # Testitiedostoissa sallitaan bandit-tietoturvaohitukset (esim. assertit) ja pitkät rivit (JSON-payloadit)
+# HUOM: unit-test.sh on shell-skripti — Ruff ei koskaan tarkista sitä, joten sille ei tarvitse per-file-ignores-sääntöä
 "**/test_*.py" = ["S101", "E501"]
-"unit-test.sh" = ["S101"]
