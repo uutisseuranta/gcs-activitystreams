@@ -43,6 +43,7 @@ Kirjoittajat per taulu:
 | Job | Cron | Kellonaika (EET) |
 |---|---|---|
 | `rss-fetch-job` | `0 * * * *` | kerran tunnissa |
+| `og-enrichment-job` | `5 * * * *` | 5 min RSS-jobin jälkeen |
 | `ahjo-fetch-job` | `0 3 * * *` | 06:00 |
 | `hri-fetch-job` | `30 3 * * *` | 06:30 |
 | `voikko-enrich-job` | `30 * * * *` | 30 min välein |
@@ -57,12 +58,12 @@ Huom: `likes-and-updated-job` korvaa aiemmat erilliset `likes-sync-job` ja `acti
 
 ## Autentikaatio ja valtuutus — Zero Trust
 
-> **Periaate:** `activitystreams`-datasetti on julkista avointa dataa — luku ei vaadi autentikaatiota. `activitystreams_social`-datasettiin kirjoittaminen vaatii **aina** validin Google `id_token`-tokenin riippumatta siitä mistä pyyntö tulee. Backend ei luota UI:n tilaan.
+> **Periaate:** `activitystreams`-datasetti on julkista avointa dataa — luku ei vaadi autentikaatiota. Kaikki **kirjoitusoperaatiot** vaativat **aina** validin Google `id_token`-tokenin riippumatta siitä mistä pyyntö tulee tai onko kirjoitettava data sosiaalista. Backend ei luota UI:n tilaan.
 
 | Endpoint | Dataset | Autentikaatio | Perustelu |
 |---|---|---|---|
 | `GET /ap/outbox` | `activitystreams` (luku) | ❌ Ei — julkinen avoin data | Lukuoperaatio, ei kirjoitusta |
-| `POST /ap/scrape` | `activitystreams.objects` (kirjoitus) | ✅ Google `id_token` pakollinen | Kirjoittaa avoimeen datasettiin, mutta Zero Trust: aina validoidaan |
+| `POST /ap/scrape` | `activitystreams.objects` (kirjoitus) | ✅ Google `id_token` pakollinen | Kirjoittaa BigQueryyn — Zero Trust: aina validoidaan |
 | `POST /ap/activities` | `activitystreams_social` (kirjoitus) | ✅ Google `id_token` pakollinen | Kirjoittaa sosiaaliseen datasettiin |
 
 Backend validoi tokenin **aina** — se ei luota siihen että UI on jo tarkistanut kirjautumisen. UI:n vastuulla on näyttää kirjautumiskehotus ennen pyyntöä, mutta backend hylkää pyynnön ilman kelvollista tokenia riippumatta UI:n tilasta.
@@ -152,8 +153,11 @@ Käyttäjän luomien objektien `id`-kenttä sisältää edelleen erillisen `ulid
 
 | Muuttuja | Arvo | Kuvaus |
 |---|---|---|
-| `GOOGLE_CLIENT_ID` | `<OAuth2-client-id>.apps.googleusercontent.com` | `id_token`-validointiin |
+| `GOOGLE_CLIENT_ID` | `<OAuth2-client-id>.apps.googleusercontent.com` | `id_token`-validointiin (`aud`-kenttä) |
 | `ALLOWED_EMAIL_DOMAINS` | *(tyhjä = kaikki)* | Haluttaessa rajoitetaan pääsy tiettyihin sähköpostidomaineihin |
+
+> [!NOTE]
+> `CLOUD_RUN_SERVICE_URL`-muuttujaa **ei tarvita** tässä projektissa. `id_token` validoidaan `GOOGLE_CLIENT_ID`-muuttujaa vastaan (`aud`-kenttä), ei Cloud Run -palvelun URL:aa vastaan.
 
 ---
 
@@ -163,7 +167,7 @@ Käyttäjän luomien objektien `id`-kenttä sisältää edelleen erillisen `ulid
 
 | Dataset | Näkyvyys | Kirjoittaa | Lukee |
 |---|---|---|---|
-| `activitystreams` | Julkinen avoin data | Jobit (#2–#4, #6, #8), write-api (#7, kommentit objects-tauluun) | query-api, kaikki |
+| `activitystreams` | Julkinen avoin data | Jobit (#2–#4, #6, #8, #24), write-api (#7, kommentit objects-tauluun) | query-api, kaikki |
 | `activitystreams_social` | Yksityinen, token-suojattu | write-api (#7, käyttäjätoiminnot) | likes-and-updated-job (laskee likes → objects) |
 
 ### `activitystreams.objects` — artikkelit, päätökset, datasetit
@@ -441,9 +445,12 @@ WHEN MATCHED THEN
 
 `POST /ap/scrape { "url": "https://..." }` — palauttaa AS2 `Article`-objektin ja tallentaa sen `activitystreams.objects`-tauluun.
 
-**Autentikaatio:** Zero Trust — vaatii aina validin Google `id_token`-tokenin (`Authorization: Bearer <id_token>`). Backend validoi tokenin `verify_oauth2_token()`-funktiolla riippumatta UI:n tilasta. Kirjoitusoikeus BigQueryyn on Cloud Run -palvelun palvelutilillä IAM-oikeuksilla.
+**Autentikaatio:** Zero Trust — vaatii aina validin Google `id_token`-tokenin (`Authorization: Bearer <id_token>`). Backend validoi tokenin `verify_oauth2_token()`-funktiolla riippumatta UI:n tilasta.
 
-**Verkkoturva ja SSRF-suojaus:** OG-scraper ei käytä domain-whitelistia. Suojaus toteutetaan URL- ja IP-validoinnilla sekä rajoituksilla HTTP-pyyntöihin:
+> [!NOTE]
+> `CLOUD_RUN_SERVICE_URL`-muuttujaa **ei tarvita** tässä palvelussa. Token validoidaan `GOOGLE_CLIENT_ID`-muuttujaa vastaan (`aud`-kenttä), ei Cloud Run -palvelun URL:aa vastaan.
+
+**Verkkoturva ja SSRF-suojaus — ei domain-whitelistia:** OG-scraper ei käytä domain-whitelistia. Suojaus toteutetaan URL- ja IP-validoinnilla sekä rajoituksilla HTTP-pyyntöihin:
 
 - URL resolvoidaan IP-osoitteeksi ennen pyyntöä. Pyyntö hylätään `403 Forbidden`, jos osoite resolvoituu:
   - localhostiin (`127.0.0.1`, `::1`, `localhost`)
@@ -467,6 +474,31 @@ WHEN MATCHED THEN
 | `updated` | `article:modified_time` | Scrape-hetki |
 
 `published` käyttää scrape-hetkeä fallbackina (toisin kuin RSS-job, joka ohittaa artikkelin). Tämä on hyväksyttää koska OG-scraper on käyttäjän manuaalisesti käynnistämä toiminto.
+
+---
+
+## Cloud Run Job: OG-rikastusjob (#24)
+
+Ajastus: `5 * * * *` (5 min RSS-jobin jälkeen). Virheenkäsittely: ks. [Virheenkäsittely ja retry-logiikka](#virheenkäsittely-ja-retry-logiikka).
+
+Käsittelee erissä (100 kpl) RSS-peräiset rivit joilla `og_enriched = FALSE`. Käyttää samaa HTTP/OG-moduulia kuin OG-scraper (#23) — robots.txt-cache (24 h), IP-osoitevalidointi, redirect-ketjutarkistus, stream `</head>`-tagiin.
+
+**Ei domain-whitelistia.** SSRF-suojaus toteutetaan samalla IP-osoitevalidoinnilla kuin OG-scraperissa (#23).
+
+Onnistunut URL → `og_enriched = TRUE`, `og_enriched_error = NULL`.
+Epäonnistunut URL → `og_enriched = TRUE`, `og_enriched_error = <virheviesti>`.
+
+Epäonnistuneet rivit käsitellään erikseen: `WHERE og_enriched = TRUE AND og_enriched_error IS NOT NULL`.
+
+**Kenttäsäännöt:**
+
+| AS2-kenttä | Sääntö |
+|---|---|
+| `name` | `longer(rss, og)` — trim ennen vertailua |
+| `summary` | `longer(rss, og)` — trim ennen vertailua |
+| `image` | OG voittaa aina jos saatavilla |
+| `published` | RSS-arvo säilyy; OG täydentää vain jos RSS-arvo puuttuu |
+| `updated` | OG voittaa jos saatavilla |
 
 ---
 
@@ -699,13 +731,11 @@ Jos MERGE-operaatio epäonnistuu: koko batch peruutetaan, `last_fetched_at` ei p
 
 ## Deployment ja konfiguraation päivityskäytännöt
 
-Kaikki sovellukset (`query-api`, `write-api`) ja jobit (`rss-fetch-job` jne.) lukevat asetuksensa (kuten syötelistat ja API-avaimet) ympäristömuuttujista.
+Kaikki sovellukset (`query-api`, `write-api`, `og-scraper`) ja jobit (`rss-fetch-job`, `og-enrichment-job` jne.) lukevat asetuksensa ympäristömuuttujista.
 
 ### Nopea konfiguraation päivitys (ilman konttikäännöstä)
 
-Kun muutetaan pelkkiä konfiguraatioita (esim. lisätään tai poistetaan RSS-syöte `deploy/rss-fetch-job.env.yaml` -tiedostosta), **ei tule ajaa täyttä konttikäännöstä** (`deploy.sh`), koska koodi säilyy samana.
-
-Ympäristömuuttujat voidaan päivittää olemassa oleville Cloud Run -resursseille sekunneissa suoraan komentoriviltä:
+Kun muutetaan pelkkiä konfiguraatioita, **ei tule ajaa täyttä konttikäännöstä** (`deploy.sh`).
 
 **Cloud Run Jobit (esim. rss-fetch-job):**
 ```bash
@@ -722,8 +752,6 @@ gcloud run services update write-api \
   --region europe-north1 \
   --project uutisseuranta-activitystreams
 ```
-
-Tämä säästää huomattavasti Cloud Build -käännösaikaa sekä välttää turhien Docker-kerrosten tallentamista rekisteriin.
 
 ---
 
