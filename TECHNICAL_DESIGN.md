@@ -14,17 +14,17 @@ https://activitystreams.uutisseuranta.net/
 
 Kirjoittajat per taulu:
 
-  activitystreams.objects    ← jobit #2 (RSS), #3 (Ahjo), #4 (HRI), #8 (OG-scraper)
-                                suora MERGE-kirjoitus, tavallinen taulu
-                                tags-sarakkeen omistaja: Voikko-job (#6)
-                                like_count-sarakkeen omistaja: likes-and-updated-job (#11/#12)
+  activitystreams.objects          ← jobit #2 (RSS), #3 (Ahjo), #4 (HRI), #8 (OG-scraper), kirjoituspalvelu #7 (kommentit)
+                                      suora MERGE-kirjoitus, tavallinen taulu
+                                      tags-sarakkeen omistaja: Voikko-job (#6)
+                                      like_count-sarakkeen omistaja: likes-and-updated-job (#11/#12)
 
-  activitystreams.activities ← kirjoituspalvelu (#7): käyttäjätoiminnot
-                                (kommentit, tykkäykset, käyttäjän luomat objektit)
-                                append-only event log
+  activitystreams_social.activities ← kirjoituspalvelu (#7): käyttäjätoiminnot
+                                      (kommentit, tykkäykset, käyttäjän luomat objektit)
+                                      append-only event log
 
-  activitystreams.likes      ← kirjoituspalvelu (#7): Like-tapahtumat
-  activitystreams.config     ← jobit päivittävät last_fetched_at ja dynaamiset URL:t
+  activitystreams_social.likes      ← kirjoituspalvelu (#7): Like-tapahtumat
+  activitystreams.config            ← jobit päivittävät last_fetched_at ja dynaamiset URL:t
 ```
 
 ### GCP-konfiguraatio
@@ -33,7 +33,8 @@ Kirjoittajat per taulu:
 |---|---|
 | **Domain** | `activitystreams.uutisseuranta.net` |
 | **GCP-projekti** | `uutisseuranta-activitystreams` |
-| **BigQuery dataset** | `activitystreams` |
+| **Julkinen BigQuery dataset** | `activitystreams` (avoin data) |
+| **Yksityinen BigQuery dataset** | `activitystreams_social` (sosiaalinen data) |
 | **Sijainti** | `europe-north1` |
 | **GitHub-repo** | `uutisseuranta/gcs-activitystreams` |
 
@@ -172,10 +173,10 @@ CLUSTER BY source, published;
 > **Miksi `published` on NOT NULL?**
 > Taulu on partitionoitu `DATE(published)`-sarakkeen mukaan. Ilman `published`-arvoa rivi ei partitionoidu oikein ja queryt hidastuvat merkittävästi. RSS-job ohittaa artikkelit joilta `<pubDate>` puuttuu (ks. #2). OG-scraper tallentaa `published = scrape-hetki` fallbackina. Poikkeustapaukset käsitellään erillisessä prosessissa (#14).
 
-### `activitystreams.activities` — append-only event log
+### `activitystreams_social.activities` — append-only event log
 
 ```sql
-CREATE TABLE activitystreams.activities (
+CREATE TABLE activitystreams_social.activities (
   id            STRING    NOT NULL,
   type          STRING    NOT NULL,  -- Create | Update | Delete | Add | Remove | Like
   actor         STRING    NOT NULL,
@@ -192,10 +193,10 @@ PARTITION BY DATE(published)
 CLUSTER BY type, actor;
 ```
 
-### `activitystreams.likes` — tykkäykset
+### `activitystreams_social.likes` — tykkäykset
 
 ```sql
-CREATE TABLE activitystreams.likes (
+CREATE TABLE activitystreams_social.likes (
   activity_id   STRING    NOT NULL,
   actor         STRING    NOT NULL,
   object_id     STRING    NOT NULL,
@@ -250,7 +251,7 @@ Config-taulun rivejä ei koskaan poisteta — vain päivitetään (`MERGE UPDATE
 | HRI-datasetti | `https://activitystreams.uutisseuranta.net/ap/objects/hri/datasets/{ckan-uuid}` |
 | HRI-kategoria | `https://activitystreams.uutisseuranta.net/ap/objects/hri/groups/{group-name}` |
 | OG-scrapattu | `https://activitystreams.uutisseuranta.net/ap/objects/scraped/{sha256(url)}` |
-| Käyttäjän luoma objekti | `https://activitystreams.uutisseuranta.net/ap/objects/user/{google-sub}/{ulid}` |
+| Käyttäjän luoma objekti | `https://activitystreams.uutisseuranta.net/ap/objects/comments/{ulid}` |
 | Käyttäjän identiteetti (actor) | `https://activitystreams.uutisseuranta.net/ap/users/{google-sub}` |
 
 ### `source`-sarake vs. `source`-query-parametri
