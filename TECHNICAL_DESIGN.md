@@ -33,8 +33,8 @@ Kirjoittajat per taulu:
 |---|---|
 | **Domain** | `activitystreams.uutisseuranta.net` |
 | **GCP-projekti** | `uutisseuranta-activitystreams` |
-| **Julkinen BigQuery dataset** | `activitystreams` (avoin data) |
-| **Yksityinen BigQuery dataset** | `activitystreams_social` (sosiaalinen data) |
+| **Julkinen BigQuery dataset** | `activitystreams` (avoin data — luettavissa ilman autentikaatiota) |
+| **Yksityinen BigQuery dataset** | `activitystreams_social` (sosiaalinen data — kirjoitus vaatii aina validin id_token) |
 | **Sijainti** | `europe-north1` |
 | **GitHub-repo** | `uutisseuranta/gcs-activitystreams` |
 
@@ -55,16 +55,25 @@ Huom: `likes-and-updated-job` korvaa aiemmat erilliset `likes-sync-job` ja `acti
 
 ---
 
-## Autentikaatio ja valtuutus
+## Autentikaatio ja valtuutus — Zero Trust
 
-| Palvelu | Autentikaatio | Perustelu |
-|---|---|---|
-| `GET /ap/outbox` | Julkinen, ei autentikointia | Avoin data — sama periaate kuin RSS-syötteet |
-| `POST /ap/scrape` | Julkinen, ei autentikointia | Avoin data — käyttäjä osoittaa julkisen URL:n scrapattavaksi |
-| `POST /ap/activities` (palvelutilit) | Cloud IAM `roles/run.invoker` | Cloud Scheduler / Cloud Run Jobit — ei muutu |
-| `POST /ap/activities` (loppukäyttäjät) | Google OIDC `id_token` — sovellustason validointi | Gmail SSO, ks. alla (#19) |
+> **Periaate:** `activitystreams`-datasetti on julkista avointa dataa — luku ei vaadi autentikaatiota. `activitystreams_social`-datasettiin kirjoittaminen vaatii **aina** validin Google `id_token`-tokenin riippumatta siitä mistä pyyntö tulee. Backend ei luota UI:n tilaan.
 
-Kaikki kolme palvelua ovat erillisiä Cloud Run -palveluja. `og-scraper` on julkinen kirjoitusendpoint (tallentaa BigQueryyn), mutta koska data on avointa eikä käyttäjäkohtaista, autentikointia ei vaadita — kirjoitusoikeus BigQueryyn on Cloud Run -palvelun palvelutilillä IAM-oikeuksilla, ei kutsujalla.
+| Endpoint | Dataset | Autentikaatio | Perustelu |
+|---|---|---|---|
+| `GET /ap/outbox` | `activitystreams` (luku) | ❌ Ei — julkinen avoin data | Lukuoperaatio, ei kirjoitusta |
+| `POST /ap/scrape` | `activitystreams.objects` (kirjoitus) | ✅ Google `id_token` pakollinen | Kirjoittaa avoimeen datasettiin, mutta Zero Trust: aina validoidaan |
+| `POST /ap/activities` | `activitystreams_social` (kirjoitus) | ✅ Google `id_token` pakollinen | Kirjoittaa sosiaaliseen datasettiin |
+
+Backend validoi tokenin **aina** — se ei luota siihen että UI on jo tarkistanut kirjautumisen. UI:n vastuulla on näyttää kirjautumiskehotus ennen pyyntöä, mutta backend hylkää pyynnön ilman kelvollista tokenia riippumatta UI:n tilasta.
+
+```
+401 Unauthorized  — Authorization-otsake puuttuu tai token ei kelpaa
+403 Forbidden     — token kelvollinen mutta ei oikeutta operaatioon
+```
+
+> [!NOTE]
+> Cloud Run -palvelut deployataan `--no-allow-unauthenticated` *Cloud IAM -tasolla* vain kirjoituspalvelulle (#7). OG-scraper (#8 / #23) ja query-api (#10) ovat `--allow-unauthenticated` Cloud IAM:n suhteen, mutta sovellustason Zero Trust -validointi hoitaa autentikaation kirjoitusoperaatioihin.
 
 ### Gmail SSO ja kirjoituspalvelu (#7, #19)
 
@@ -76,9 +85,9 @@ Kirjoituspalvelu (#7) tukee loppukäyttäjien autentikointia Google-kirjautumise
 Selain
   └▶ Google Sign-In (OAuth2 / OIDC)
         └▶ id_token (JWT: sub, email, email_verified)
-              └▶ POST /ap/activities
+              └▶ POST /ap/activities  tai  POST /ap/scrape
                     Authorization: Bearer <id_token>
-                        └▶ Cloud Run (write-api)
+                        └▶ Cloud Run
                               └▶ google-auth-library: verify_oauth2_token()
                                     └▶ email_verified = true?
                                           └▶ sub → actor-IRI → BigQuery
@@ -150,6 +159,13 @@ Käyttäjän luomien objektien `id`-kenttä sisältää edelleen erillisen `ulid
 
 ## BigQuery-skeema (#1)
 
+### Datasettijako
+
+| Dataset | Näkyvyys | Kirjoittaa | Lukee |
+|---|---|---|---|
+| `activitystreams` | Julkinen avoin data | Jobit (#2–#4, #6, #8), write-api (#7, kommentit objects-tauluun) | query-api, kaikki |
+| `activitystreams_social` | Yksityinen, token-suojattu | write-api (#7, käyttäjätoiminnot) | likes-and-updated-job (laskee likes → objects) |
+
 ### `activitystreams.objects` — artikkelit, päätökset, datasetit
 
 ```sql
@@ -159,8 +175,10 @@ CREATE TABLE activitystreams.objects (
   published       TIMESTAMP NOT NULL OPTIONS(description='AS2 published – pakollinen, taulu on partitionoitu tämän mukaan'),
   updated         TIMESTAMP          OPTIONS(description='AS2 updated – päivittyy käyttäjäaktiivisuudesta (#12)'),
   tags            ARRAY<STRING>      OPTIONS(description='Lemmatisoidut tagit (Voikko #6)'),
-  tags_enriched   BOOL      NOT NULL OPTIONS(description='TRUE kun Voikko-job on käsitellyt rivin — estää ikuisen uudelleenkäsittelysilmukan tyhjän tuloksen tapauksessa'),
-  like_count      INT64     NOT NULL OPTIONS(description='Tykkäysmäärä activitystreams.likes-taulusta, päivitetään likes-and-updated-jobilla (#11/#12)'),
+  tags_enriched   BOOL      NOT NULL OPTIONS(description='TRUE kun Voikko-job on käsitellyt rivin'),
+  og_enriched     BOOL               OPTIONS(description='TRUE kun OG-tagit on haettu (rss-rivit: #24, scraped-rivit: aina TRUE)'),
+  og_enriched_error STRING           OPTIONS(description='Virheviesti jos OG-haku epäonnistui — NULL = ei virhettä'),
+  like_count      INT64     NOT NULL OPTIONS(description='Tykkäysmäärä activitystreams_social.likes-taulusta'),
   deleted         BOOL      NOT NULL OPTIONS(description='Pehmeä poisto'),
   object_json     JSON               OPTIONS(description='Koko AS2-objekti natiivina JSON-tyypinä')
 )
@@ -168,7 +186,7 @@ PARTITION BY DATE(published)
 CLUSTER BY source, published;
 ```
 
-> **Oletusarvot:** `tags_enriched=FALSE`, `like_count=0`, `deleted=FALSE` asetetaan INSERT-lauseissa, ei DDL:ssä. BigQuery CREATE TABLE ei tue DEFAULT-lausekkeita.
+> **Oletusarvot:** `tags_enriched=FALSE`, `og_enriched=FALSE`, `like_count=0`, `deleted=FALSE` asetetaan INSERT-lauseissa, ei DDL:ssä. BigQuery CREATE TABLE ei tue DEFAULT-lausekkeita.
 
 > **Miksi `published` on NOT NULL?**
 > Taulu on partitionoitu `DATE(published)`-sarakkeen mukaan. Ilman `published`-arvoa rivi ei partitionoidu oikein ja queryt hidastuvat merkittävästi. RSS-job ohittaa artikkelit joilta `<pubDate>` puuttuu (ks. #2). OG-scraper tallentaa `published = scrape-hetki` fallbackina. Poikkeustapaukset käsitellään erillisessä prosessissa (#14).
@@ -353,10 +371,10 @@ WHEN MATCHED AND S.updated > T.updated THEN
         T.published   = S.published,
         T.updated     = S.updated,
         T.source      = S.source
-        -- tags, tags_enriched, like_count ja deleted jätetään tarkoituksella pois
+        -- tags, tags_enriched, og_enriched, like_count ja deleted jätetään tarkoituksella pois
 WHEN NOT MATCHED THEN
-    INSERT (id, source, published, updated, tags, tags_enriched, like_count, deleted, object_json)
-    VALUES (S.id, S.source, S.published, S.updated, [], FALSE, 0, FALSE, S.object_json)
+    INSERT (id, source, published, updated, tags, tags_enriched, og_enriched, like_count, deleted, object_json)
+    VALUES (S.id, S.source, S.published, S.updated, [], FALSE, FALSE, 0, FALSE, S.object_json)
 ```
 
 **Kuva-prioriteetti:** (1) `<media:thumbnail>`, (2) `<enclosure type="image/*">`, (3) `<image>` kanavan tasolla.
@@ -419,11 +437,11 @@ WHEN MATCHED THEN
 
 ---
 
-## Cloud Run endpoint: OG-scraper (#8)
+## Cloud Run endpoint: OG-scraper (#8 / #23)
 
-`POST /ap/scrape { "url": "https://..." }` — palauttaa AS2 `Article`-objektin ja tallentaa sen `objects`-tauluun.
+`POST /ap/scrape { "url": "https://..." }` — palauttaa AS2 `Article`-objektin ja tallentaa sen `activitystreams.objects`-tauluun.
 
-Endpoint on julkinen (ks. [Autentikaatio ja valtuutus](#autentikaatio-ja-valtuutus)). Kirjoitusoikeus BigQueryyn on Cloud Run -palvelun palvelutilillä IAM-oikeuksilla, ei kutsujalla.
+**Autentikaatio:** Zero Trust — vaatii aina validin Google `id_token`-tokenin (`Authorization: Bearer <id_token>`). Backend validoi tokenin `verify_oauth2_token()`-funktiolla riippumatta UI:n tilasta. Kirjoitusoikeus BigQueryyn on Cloud Run -palvelun palvelutilillä IAM-oikeuksilla.
 
 **Domain-whitelist:** Scraper hyväksyy vain manuaalisesti ylläpidetyn domain-listan URL:t. Uusi domain lisätään listaan harkiten ja testataan ennen käyttöönottoa. Tuntemattomat domainit palauttavat `403 Forbidden`. Tämä estää SSRF-hyväksikäytöt ja tahattoman ulkopuolisten palvelinten kuormittamisen.
 
@@ -439,26 +457,26 @@ Endpoint on julkinen (ks. [Autentikaatio ja valtuutus](#autentikaatio-ja-valtuut
 | `published` | `article:published_time` | Scrape-hetki |
 | `updated` | `article:modified_time` | Scrape-hetki |
 
-`published` käyttää scrape-hetkeä fallbackina (toisin kuin RSS-job, joka ohittaa artikkelin). Tämä on hyväksyttyä koska OG-scraper on käyttäjän manuaalisesti käynnistämä toiminto.
+`published` käyttää scrape-hetkeä fallbackina (toisin kuin RSS-job, joka ohittaa artikkelin). Tämä on hyväksyttää koska OG-scraper on käyttäjän manuaalisesti käynnistämä toiminto.
 
 ---
 
 ## Cloud Run: kirjoituspalvelu (#7)
 
-Vastaanottaa AS2-aktiviteetteja JSON:na. Validoi tyypin ja pakolliset kentät. Kirjoittaa `activities`- ja tarvittaessa `likes`-tauluun BigQuery Storage Write API:lla.
+Vastaanottaa AS2-aktiviteetteja JSON:na. Validoi tyypin ja pakolliset kentät. Kirjoittaa `activitystreams_social.activities`- ja tarvittaessa `activitystreams_social.likes`-tauluun BigQuery Storage Write API:lla.
 
-Autentikaatio: ks. [Autentikaatio ja valtuutus — Gmail SSO](#gmail-sso-ja-kirjoituspalvelu-7-19).
+**Autentikaatio:** Zero Trust — vaatii aina validin Google `id_token`-tokenin. Ks. [Autentikaatio ja valtuutus — Zero Trust](#autentikaatio-ja-valtuutus--zero-trust).
 
 ### Tuetut aktiviteetit
 
 | Aktiviteetti | Kirjoitetaan |
 |---|---|
-| `Create` | `activities` (kommentti, vastaus, käyttäjän artikkeli) |
-| `Update` | `activities` (päivitetty objekti) |
-| `Delete` | `activities` + `objects.deleted = TRUE` |
-| `Add` | `activities` (tagi-operaatio) |
-| `Remove` | `activities` (tagi-operaatio) |
-| `Like` | `activities` + `likes` |
+| `Create` | `activitystreams_social.activities` (kommentti, vastaus, käyttäjän artikkeli) |
+| `Update` | `activitystreams_social.activities` (päivitetty objekti) |
+| `Delete` | `activitystreams_social.activities` + `activitystreams.objects.deleted = TRUE` |
+| `Add` | `activitystreams_social.activities` (tagi-operaatio) |
+| `Remove` | `activitystreams_social.activities` (tagi-operaatio) |
+| `Like` | `activitystreams_social.activities` + `activitystreams_social.likes` |
 | `Dislike` | ❌ 400 Bad Request |
 | `Announce` | ❌ 400 Bad Request |
 | `Undo` | ❌ 400 Bad Request — ks. alla |
@@ -477,7 +495,7 @@ in_reply_to kohde on Note/vastaus → 400 Bad Request
 
 ### Delete-semantiikka
 
-Delete ei poista tietokannasta. `activities`-tauluun kirjataan `Delete`-tapahtuma ja `objects.deleted` asetetaan `TRUE`:ksi. Poistettu kommentti näytetään paikkamerkkinä `[kommentti poistettu]` jos sillä on vastauksia.
+Delete ei poista tietokannasta. `activitystreams_social.activities`-tauluun kirjataan `Delete`-tapahtuma ja `activitystreams.objects.deleted` asetetaan `TRUE`:ksi. Poistettu kommentti näytetään paikkamerkkinä `[kommentti poistettu]` jos sillä on vastauksia.
 
 ### Update-semantiikka
 
@@ -485,7 +503,7 @@ Käyttäjä voi päivittää **vain oman kommenttinsa** sisällön. Organisaatio
 
 - `actor` validoidaan: `Update`-pyynnön `actor`-IRI:n `sub`-osa täytyy vastata alkuperäisen `Create`-aktiviteetin `actor`-IRI:n `sub`-osaa. Jos ne eivät täsmää, palautetaan `403 Forbidden`.
 - `published` ei muutu — vain `object_json` ja `updated` päivittyvät.
-- `Update`-aktiviteetti kirjoitetaan `activities`-tauluun ja `objects.object_json` päivitetään MERGE-operaatiolla.
+- `Update`-aktiviteetti kirjoitetaan `activitystreams_social.activities`-tauluun ja `activitystreams.objects.object_json` päivitetään MERGE-operaatiolla.
 - `thread_root`-artikkelin `updated` päivittyy muokatusta kommentista (ks. [Tykkäyslaskuri ja updated-aikaleima](#tykkäyslaskuri-ja-updated-aikaleima-1112)).
 
 ---
@@ -493,6 +511,8 @@ Käyttäjä voi päivittää **vain oman kommenttinsa** sisällön. Organisaatio
 ## Cloud Run: outbox-endpoint (#10)
 
 `GET /ap/outbox?tag=asuminen&n=50`
+
+**Autentikaatio:** Julkinen — ei vaadi tokenia. Lukee `activitystreams`-datasettia.
 
 ### Paginaatiomalli
 
@@ -546,17 +566,17 @@ ORDER BY
 
 ## Tykkäyslaskuri ja updated-aikaleima (#11/#12)
 
-`likes-and-updated-job` ajaa 15 minuutin välein kaksi laskentaa peräkkäin samassa Cloud Run Job -suorituksessa. Nämä olivat aiemmin erilliset jobit; ne on yhdistetty koska molemmat kirjoittavat samaan `objects`-tauluun samalla 15 min rytmillä. Virheenkäsittely: ks. [Virheenkäsittely ja retry-logiikka](#virheenkäsittely-ja-retry-logiikka).
+`likes-and-updated-job` ajaa 15 minuutin välein kaksi laskentaa peräkkäin samassa Cloud Run Job -suorituksessa. Nämä olivat aiemmin erilliset jobit; ne on yhdistetty koska molemmat kirjoittavat samaan `activitystreams.objects`-tauluun samalla 15 min rytmillä. Virheenkäsittely: ks. [Virheenkäsittely ja retry-logiikka](#virheenkäsittely-ja-retry-logiikka).
 
 ### Vaihe 1: like_count-päivitys
 
-`like_count INT64 NOT NULL DEFAULT 0` on suoraan `activitystreams.objects`-taulussa.
+Lukee `activitystreams_social.likes`-taulusta, kirjoittaa `activitystreams.objects.like_count`-sarakkeeseen.
 
 ```sql
 MERGE activitystreams.objects T
 USING (
   SELECT object_id, COUNT(*) AS cnt
-  FROM activitystreams.likes
+  FROM activitystreams_social.likes
   GROUP BY object_id
 ) S ON T.id = S.object_id
 WHEN MATCHED AND T.deleted = FALSE
@@ -569,7 +589,9 @@ WHEN MATCHED AND T.deleted = FALSE
 
 ### Vaihe 2: updated-aikaleiman päivitys
 
-Kun artikkeliin kohdistuu käyttäjäaktiivisuutta, **thread_root-artikkelin** `updated` päivittyy. Poistetut aktiviteetit suodatetaan `object_id`:n perusteella: jos `activities`-taulussa on `type = 'Delete'` samalla `object_id`:llä, kyseinen aktiviteetti jätetään huomiotta.
+Lukee `activitystreams_social.activities`-taulusta, kirjoittaa `activitystreams.objects.updated`-sarakkeeseen.
+
+Kun artikkeliin kohdistuu käyttäjäaktiivisuutta, **thread_root-artikkelin** `updated` päivittyy. Poistetut aktiviteetit suodatetaan `object_id`:n perusteella: jos `activitystreams_social.activities`-taulussa on `type = 'Delete'` samalla `object_id`:llä, kyseinen aktiviteetti jätetään huomiotta.
 
 | Tapahtuma | Päivittää `updated` |
 |---|---|
@@ -582,10 +604,10 @@ Kun artikkeliin kohdistuu käyttäjäaktiivisuutta, **thread_root-artikkelin** `
 ```sql
 SELECT COALESCE(thread_root, object_id) AS root_url,
        MAX(published) AS last_activity_at
-FROM activitystreams.activities a
+FROM activitystreams_social.activities a
 WHERE type IN ('Like', 'Create')
   AND NOT EXISTS (
-    SELECT 1 FROM activitystreams.activities d
+    SELECT 1 FROM activitystreams_social.activities d
     WHERE d.type = 'Delete' AND d.object_id = a.object_id
   )
 GROUP BY root_url
@@ -717,3 +739,5 @@ Tämä säästää huomattavasti Cloud Build -käännösaikaa sekä välttää t
 - #17 Logging ja monitoring
 - #18 objects_pending-skeema
 - #19 Gmail SSO → IAM-rooli -mappaus kirjoituspalvelulle
+- #23 OG-scraper endpoint
+- #24 OG-rikastusjob
