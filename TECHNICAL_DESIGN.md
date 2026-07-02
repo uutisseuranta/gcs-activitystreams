@@ -443,7 +443,16 @@ WHEN MATCHED THEN
 
 **Autentikaatio:** Zero Trust — vaatii aina validin Google `id_token`-tokenin (`Authorization: Bearer <id_token>`). Backend validoi tokenin `verify_oauth2_token()`-funktiolla riippumatta UI:n tilasta. Kirjoitusoikeus BigQueryyn on Cloud Run -palvelun palvelutilillä IAM-oikeuksilla.
 
-**Domain-whitelist:** Scraper hyväksyy vain manuaalisesti ylläpidetyn domain-listan URL:t. Uusi domain lisätään listaan harkiten ja testataan ennen käyttöönottoa. Tuntemattomat domainit palauttavat `403 Forbidden`. Tämä estää SSRF-hyväksikäytöt ja tahattoman ulkopuolisten palvelinten kuormittamisen.
+**Verkkoturva ja SSRF-suojaus:** OG-scraper ei käytä domain-whitelistia. Suojaus toteutetaan URL- ja IP-validoinnilla sekä rajoituksilla HTTP-pyyntöihin:
+
+- URL resolvoidaan IP-osoitteeksi ennen pyyntöä. Pyyntö hylätään `403 Forbidden`, jos osoite resolvoituu:
+  - localhostiin (`127.0.0.1`, `::1`, `localhost`)
+  - RFC1918-private-osoitteisiin (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`)
+  - link-local-osoitteisiin (`169.254.0.0/16`) tai metadata-IP-osoitteisiin (esim. `169.254.169.254`)
+- HTTP-redirect-ketjut tarkistetaan samalla tavalla: jos jokin askel päätyy yksityiseen osoiteavaruuteen, pyyntö katkaistaan ja palautetaan `403 Forbidden`.
+- Scraper käyttää pientä timeout-arvoa (10 s) ja rajoittaa vastekoon (2 MB); vastauksen streamaus katkaistaan `</head>`-tagin jälkeen.
+- Endpoint rajoittaa pyyntöjä per IP: 10 pyyntöä / 60 s. Ylitys → `429 Too Many Requests`.
+- Käyttäjä voi syöttää vain yhden URL:n kerrallaan; artikkelissa säilytetään vain ensimmäinen siihen liitetty URL.
 
 **Duplikaattipyynnöt:** Sama URL kahdesti tuottaa saman `id`:n (`sha256(url)`), joten MERGE-operaatio hoitaa duplikaatin hiljaisesti.
 
