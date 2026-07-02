@@ -465,7 +465,7 @@ Endpoint on julkinen (ks. [Autentikaatio ja valtuutus](#autentikaatio-ja-valtuut
 | `published` | `article:published_time` | Scrape-hetki |
 | `updated` | `article:modified_time` | Scrape-hetki |
 
-`published` käyttää scrape-hetkeä fallbackina (toisin kuin RSS-job, joka ohittaa artikkelin). Tämä on hyväksyttyä koska OG-scraper on käyttäjän manuaalisesti käynnistämä toiminto.
+`published` käyttää scrape-hetkeä fallbackina (toisin kuin RSS-job, joka ohittaa artikkelin). Tämä on hyväksyttää koska OG-scraper on käyttäjän manuaalisesti käynnistämä toiminto.
 
 ---
 
@@ -755,6 +755,14 @@ Monimutkaiset tai laajat kokonaisuudet voidaan aloittaa avaamalla luonnos-Pull R
 Projektissa käytetään **Ruff**-työkalua automaattiseen koodin laadun, tyylin (isort, pycodestyle) ja tietoturvan (bandit) tarkistamiseen.
 - Ruff on konfiguroitu juuritason `pyproject.toml`-tiedostossa.
 - Se ajaa tietoturvatestit (`flake8-bandit` S-säännöt) ja tyylitestit osana CI-pipelinea (`.github/workflows/unit-tests.yml`) jokaisen Pull Requestin ja push-tapahtuman yhteydessä.
+- CI-askel käyttää `--output-format=github`-lippua, jolloin Ruffin löydöt näkyvät PR:ssä GitHub-natiiveina annotaatioina suoraan muuttuneilla koodiriveillä — erillinen lokiselaus ei ole tarpeen.
+
+### `pyproject.toml`-päätökset
+- `unit-test.sh` on shell-skripti eikä Python-tiedosto — Ruff ei koskaan tarkista sitä, joten `per-file-ignores`-sääntö sille oli harhaanjohtava ja on poistettu.
+- `ANN` (type annotations) on jätetty pois `select`-listasta tarkoituksella — lisätään iteraation myöhemmässä vaiheessa kun koodipohja on vakiintunut.
+
+### Yhteiset käytännöt useassa repossa
+"Teknologiavalintojen ensisijaisuusperiaate" ja "Draft PR -käytäntö" ovat identtiset kaikissa kolmessa repossa (`bq-activitystreams`, `uutisseuranta.github.io`, `patterns`). Tämä on tietoinen päätös: käytännöt toistuvat tarkoituksella koska yhteistä `organization-level CONTRIBUTING.md` -tiedostoa ei ole. Jos periaatteet muuttuvat, ne tulee päivittää kaikkiin kolmeen repoon.
 
 ---
 
