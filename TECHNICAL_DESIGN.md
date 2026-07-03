@@ -770,9 +770,23 @@ Kaikki backend-ympäristön muutokset, konttien kääntäminen ja käyttöönoto
 ## Suunnittelu- ja kehityskäytännöt
 
 ### Teknologiavalintojen ensisijaisuusperiaate
-Kehityksessä noudatetaan ensisijaisuusperiaatetta riippuvuuksien minimoimiseksi ja järjestelmän pitkäikäisyyden takaamiseksi:
+Kehityksessä noudatetaan ensisijaisuusperiaetetta riippuvuuksien minimoimiseksi ja järjestelmän pitkäikäisyyden takaamiseksi:
 1. **Ensisijaisesti:** Avoimet standardit (kuten ActivityStreams 2.0, JSON Schema).
 2. **Toissijaisesti:** Standardoidut, de facto standardoidut tai puhtaat "vanilla"-teknologiat (kuten standardit Python-kirjastot, natiivit Docker-kontit, BigQuery SQL).
+
+### Activity Streams 2.0 standardinmukaisuus
+Kaikessa tietomallinnuksessa ja rajapintatiedonsiirrossa käytetään W3C:n määrittelemiä Activity Streams 2.0 -kenttiä ja schemaa.
+- Kanoninen spesifikaatio: [W3C Activity Streams 2.0 Core](https://www.w3.org/TR/activitystreams-core/) ja [Vocabulary](https://www.w3.org/TR/activitystreams-vocabulary/)
+- Kaikki JSON-LD `@context`-tunnisteet ja objektien ominaisuudet noudattavat suoraan standardissa sovittuja nimiä ja tyyppejä (kuten `Article` uutisille ja `Like`/`Dislike` reaktioille).
+- Koodissa käytetään aina standardinmukaista Activity Streams 2.0 -nimitystä rajapintakommunikaatiossa (esim. `Like`/`Dislike`), vaikka käyttöliittymän näyttöniminä (displayname) käytetään `Samaa mieltä` / `Eri mieltä` (tai `Agree`/`Disagree`).
+
+### Avoimen datan agnostisuusperiaate
+
+Kun käsitellään avointa dataa (kuten RSS-syötteitä tai ulkoisia datasettejä), noudatetaan datan suhteen agnostista periaatetta.
+- Datan laatua, puutteita tai virheitä ei yritetä korjata tai hylätä ingestion (fetch) -vaiheessa, vaan sisäänluku pidetään mahdollisimman sallivana.
+- Mahdolliset datan laatuongelmat, suodatukset ja korjaukset suoritetaan prosessin lopussa — joko lukupäässä (API) tai erillisellä rikastus-jobilla.
+
+---
 
 ### Luonnos-Pull Requestit (Draft PR) ja kysymykset kontekstissa
 Monimutkaiset tai laajat kokonaisuudet voidaan aloittaa avaamalla luonnos-Pull Request (Draft PR).
@@ -821,3 +835,26 @@ Projektissa noudatetaan yhtenäistä versionumerointi- ja julkaisukäytäntöä 
 - #17 Logging ja monitoring
 - #18 objects_pending-skeema
 - #19 Gmail SSO → IAM-rooli -mappaus kirjoituspalvelulle
+
+---
+
+## Iteraatiot
+
+### Iteraatio 3 — Scope
+
+#### Teema 2: Käyttäjävuorovaikutus (Like / Dislike & Agree / Disagree)
+
+| # | Tiketti | Kuvaus |
+|---|---|---|
+| 4 | [#33](https://github.com/uutisseuranta/bq-activitystreams/issues/33) | feat: vastaanota Like/Dislike-aktiviteetit BigQueryhin ja laske Agree+Disagree-summalaskurit per artikkeli (query-api suorittaa aggregointilaskennan BigQueryssa ja palauttaa valmiit laskurit JSON-vasteessa) |
+ 
+ #### Teema 3: Laadunvalvonta, testaus ja vakauttaminen (QA & Refactoring)
+ 
+ | # | Tiketti | Kuvaus |
+ |---|---|---|
+| 9  | [#27](https://github.com/uutisseuranta/bq-activitystreams/issues/27) | Testing: poistetaan apufunktioiden duplikaatio unit-test.sh-tiedostosta ja importataan ne suoraan `src.rss_fetch_job.main`-moduulista inline-python-testeihin. |
+| 10 | [#28](https://github.com/uutisseuranta/bq-activitystreams/issues/28) | Testing: Laajenna write-api:n yksikkötestejä — kattaa happy path (Create, Like, Update) ja virhetilanteet (duplikaatti-Like 409, puuttuva actor 400, luvaton kirjoitus 403, tunnistautumaton pyyntö 401) |
+ | 11 | [#29](https://github.com/uutisseuranta/bq-activitystreams/issues/29) | Testing: Lisää yksikkötestit query-api -lukurajapinnalle — suodatus actor/object_id:llä, aikarajaus, sivutus, tyhjä tulos ([]), full-table scan -esto (pakollinen aikaväli-/partitiotarkistus) |
+ | 12 | [#30](https://github.com/uutisseuranta/bq-activitystreams/issues/30) | Testing: Lisää yksikkötestit og-scraperille ja og-enrichment-jobille — käytetään `unittest.mock.patch` HTTP-kutsujen mockaukseen, ja SQL MERGE -lausekkeen syntaksitestaus BigQuery Clientin `dry_run=True` -parametria hyödyntäen |
+ 
+ Koko Iteraatio 3 scope (kaikki kolme repoa): ks. [uutisseuranta.github.io PR #32](https://github.com/uutisseuranta/uutisseuranta.github.io/pull/32)
