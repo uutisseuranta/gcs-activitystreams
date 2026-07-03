@@ -770,9 +770,17 @@ Kaikki backend-ympäristön muutokset, konttien kääntäminen ja käyttöönoto
 ## Suunnittelu- ja kehityskäytännöt
 
 ### Teknologiavalintojen ensisijaisuusperiaate
-Kehityksessä noudatetaan ensisijaisuusperiaatetta riippuvuuksien minimoimiseksi ja järjestelmän pitkäikäisyyden takaamiseksi:
+Kehityksessä noudatetaan ensisijaisuusperiaetetta riippuvuuksien minimoimiseksi ja järjestelmän pitkäikäisyyden takaamiseksi:
 1. **Ensisijaisesti:** Avoimet standardit (kuten ActivityStreams 2.0, JSON Schema).
 2. **Toissijaisesti:** Standardoidut, de facto standardoidut tai puhtaat "vanilla"-teknologiat (kuten standardit Python-kirjastot, natiivit Docker-kontit, BigQuery SQL).
+
+### Activity Streams 2.0 standardinmukaisuus
+Kaikessa tietomallinnuksessa ja rajapintatiedonsiirrossa käytetään W3C:n määrittelemiä Activity Streams 2.0 -kenttiä ja schemaa.
+- Kanoninen spesifikaatio: [W3C Activity Streams 2.0 Core](https://www.w3.org/TR/activitystreams-core/) ja [Vocabulary](https://www.w3.org/TR/activitystreams-vocabulary/)
+- Kaikki JSON-LD `@context`-tunnisteet ja objektien ominaisuudet noudattavat suoraan standardissa sovittuja nimiä ja tyyppejä (kuten `Article` uutisille ja `Like`/`Dislike` reaktioille).
+- Koodissa käytetään aina standardinmukaista Activity Streams 2.0 -nimitystä rajapintakommunikaatiossa (esim. `Like`/`Dislike`), vaikka käyttöliittymän näyttöniminä (displayname) käytetään `Samaa mieltä` / `Eri mieltä` (tai `Agree`/`Disagree`).
+
+---
 
 ### Luonnos-Pull Requestit (Draft PR) ja kysymykset kontekstissa
 Monimutkaiset tai laajat kokonaisuudet voidaan aloittaa avaamalla luonnos-Pull Request (Draft PR).
@@ -827,8 +835,6 @@ Projektissa noudatetaan yhtenäistä versionumerointi- ja julkaisukäytäntöä 
 ## Iteraatiot
 
 ### Iteraatio 3 — Scope
-
-> **Suunniteltu:** 2026-07-03 | **Arviointijakso:** Iteraation 3 sprintti
 
 #### Teema 2: Käyttäjävuorovaikutus (Like / Dislike & Agree / Disagree)
 
