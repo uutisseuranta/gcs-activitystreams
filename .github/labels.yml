@@ -1,0 +1,58 @@
+# GitHub Labels — uutisseuranta Jira-GitHub sync
+# Käytetään: priority:*, sprint:*, status:* -synkronointiin Jiran kanssa
+
+- name: "priority:highest"
+  color: "b71c1c"
+  description: "Jira: Highest priority"
+
+- name: "priority:high"
+  color: "e53935"
+  description: "Jira: High priority"
+
+- name: "priority:medium"
+  color: "fb8c00"
+  description: "Jira: Medium priority"
+
+- name: "priority:low"
+  color: "81c784"
+  description: "Jira: Low priority"
+
+- name: "priority:lowest"
+  color: "b0bec5"
+  description: "Jira: Lowest priority"
+
+- name: "sprint:1"
+  color: "5c6bc0"
+  description: "Jira Sprint 1"
+
+- name: "sprint:2"
+  color: "5c6bc0"
+  description: "Jira Sprint 2"
+
+- name: "sprint:3"
+  color: "5c6bc0"
+  description: "Jira Sprint 3"
+
+- name: "sprint:4"
+  color: "5c6bc0"
+  description: "Jira Sprint 4"
+
+- name: "sprint:5"
+  color: "5c6bc0"
+  description: "Jira Sprint 5"
+
+- name: "status:to-do"
+  color: "eceff1"
+  description: "Jira: To Do"
+
+- name: "status:in-progress"
+  color: "f9a825"
+  description: "Jira: In Progress"
+
+- name: "status:in-review"
+  color: "0288d1"
+  description: "Jira: In Review"
+
+- name: "status:done"
+  color: "388e3c"
+  description: "Jira: Done"
