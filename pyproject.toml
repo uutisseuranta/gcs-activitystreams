@@ -16,7 +16,14 @@ select = [
     "S",   # flake8-bandit: SAST-tietoturvatarkistukset (kovakoodatut salasanat, subprocess-käyttö)
     # ANN (type annotations) jätetty pois tarkoituksella — lisätään iteraation myöhemmässä vaiheessa
 ]
-ignore = []
+ignore = [
+    "S608", # SQL injection false positive (BigQuery-taulun nimen interpolointi)
+    "S105", # Kovakoodattu salasana false positive (mock-token tarkistus)
+    "B904", # Exception chaining (FastAPI HTTPExceptions ei tarvitse 'from None' chainingia)
+    "E501", # Rivipituudet (pitkät BigQuery SQL-kyselyt koodissa)
+    "B008", # FastAPI Query() oletusarvoissa (FastAPI-standardikäytäntö)
+    "S110", # try-except-pass (tietoinen hiljainen sivuutus parserissa)
+]
 
 [tool.ruff.lint.per-file-ignores]
 # S101: assert-lauseet testeissä eivät ole tietoturvaongelma (Bandit false positive)
