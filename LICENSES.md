@@ -1,6 +1,6 @@
-# LICENSES.md — Avointen komponenttien lisenssit ja ylläpito (gcs-activitystreams)
+# LICENSES.md — Avointen komponenttien lisenssit ja ylläpito (bq-activitystreams)
 
-Tämä tiedosto kuvaa **gcs-activitystreams**-repositoriossa käytetyt avoimen lähdekoodin kolmannen osapuolen ohjelmistokomponentit, niiden lisenssit, ylläpidon tilan, vastuutahot ja ylläpitäjien ensisijaiset toimintamaat.
+Tämä tiedosto kuvaa **bq-activitystreams**-repositoriossa käytetyt avoimen lähdekoodin kolmannen osapuolen ohjelmistokomponentit, niiden lisenssit, ylläpidon tilan, vastuutahot ja ylläpitäjien ensisijaiset toimintamaat.
 
 | Komponentti | Lisenssi | Ylläpidon tila | Vastuutaho | Ylläpitäjän maa |
 | :--- | :--- | :--- | :--- | :--- |
@@ -38,3 +38,17 @@ Tämä tiedosto kuvaa **gcs-activitystreams**-repositoriossa käytetyt avoimen l
 - **Rooli:** HTML/XML-syötteiden jäsennys ja uutisobjektien tietojen (esim. RSS ja Open Graph) kaavinta.
 - **Elinvoima:** Vakaa ja vakiintunut. Molemmat kirjastot ovat olleet Python-ekosysteemin peruskiviä jo yli kymmenen vuotta.
 - **Maantiede:** Saksa / Yhdysvallat.
+
+---
+
+## Standardikirjasto (CPython / PSF)
+
+Projektissa käytetään laajalti Pythonin standardikirjastoa (`logging`, `json`, `datetime`, `os`, `sys`, `hashlib` jne.). Nämä ovat osa CPython-toteutusta eivätkä ole erillisiä `pip`-riippuvuuksia.
+
+| | |
+|---|---|
+| **Lisenssi** | PSF License 2.0 — permissiivinen, BSD-yhteensopiva |
+| **Ylläpitäjä** | Python Software Foundation (PSF) |
+| **Maa** | 🇺🇸 Yhdysvallat |
+
+`JsonFormatter`-lokitusluokka (käytössä jokaisessa `src/*/main.py`) rakentuu yksinomaan standardikirjaston `logging`-, `json`- ja `datetime`-moduulien päälle — ei kolmannen osapuolen riippuvuuksia. Päätös on kirjattu `TECHNICAL_DESIGN.md`:n Lokitus-osiossa.

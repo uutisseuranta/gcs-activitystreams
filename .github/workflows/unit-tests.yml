@@ -14,6 +14,9 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install defusedxml -r requirements-dev.txt
+      - name: Run Ruff style and security checks
+        # --output-format=github: löydöt näkyvät PR:n diff-näkymässä annotation-nuolina
+        run: ruff check . --output-format=github
       - run: bash unit-test.sh
       - name: Verify STANDARDS.md is in sync with schemas
         run: |

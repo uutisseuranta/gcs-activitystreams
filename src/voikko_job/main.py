@@ -1,5 +1,5 @@
 # src/voikko_job/main.py
-from collections import Counter
+import datetime
 import html as html_lib
 import json
 import logging
@@ -7,19 +7,35 @@ import os
 import re
 import sys
 import uuid
+from collections import Counter
 from typing import Any, Dict, List
 
-from google.cloud import bigquery
 import libvoikko
+from google.cloud import bigquery
+
 
 # Määritellään lokitustaso
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+class JsonFormatter(logging.Formatter):
+    def format(self, record):
+        log_entry = {
+            "severity": record.levelname,
+            "message": record.getMessage(),
+            "logger": record.name,
+            "time": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+        }
+        if record.exc_info:
+            log_entry["exception"] = self.formatException(record.exc_info)
+        return json.dumps(log_entry, ensure_ascii=False)
+
+handler = logging.StreamHandler()
+handler.setFormatter(JsonFormatter())
+logging.basicConfig(level=logging.INFO, handlers=[handler], force=True)
 logger = logging.getLogger("voikko-job")
 
 # Sanat, joita ei haluta tageiksi (lisäsuodatin Voikon sanaluokkien lisäksi)
 STOPWORDS = {
-    "olla", "että", "joka", "se", "hän", "tämä", "voida", "saada", "tulla", 
-    "pitää", "tehdä", "vuosi", "päivä", "aika", "koko", "moni", "muu", "kaikki", 
+    "olla", "että", "joka", "se", "hän", "tämä", "voida", "saada", "tulla",
+    "pitää", "tehdä", "vuosi", "päivä", "aika", "koko", "moni", "muu", "kaikki",
     "jokin", "mikä", "mukaan", "sekä", "kuin", "vaan", "vai", "tai", "koska",
     "suomi", "suomalainen", "uutiset", "uutinen", "viime", "uusi", "ensimmäinen"
 }
@@ -55,7 +71,7 @@ def extract_text(obj: Dict[str, Any]) -> str:
     """Poimii tekstisisällön ActivityStreams-objektin name, summary ja content -kentistä."""
     # Jos kyseessä on AS2-aktiviteetti joka käärii objektin
     inner = obj.get("object", obj) if isinstance(obj.get("object"), dict) else obj
-    
+
     parts = [
         inner.get("name", ""),
         inner.get("summary", ""),
@@ -69,31 +85,31 @@ def analyze_tags(text: str, v: libvoikko.Voikko) -> List[str]:
     """Tokenisoi tekstin, lemmatisoi sanat Voikolla ja palauttaa yleisimmät avainsanat."""
     # Etsitään suomen kielen aakkosiin kuuluvat sanat (mukaan lukien yhdysviivalliset sanat)
     tokens = re.findall(r"[a-zäöåA-ZÄÖÅ-]{3,}", text)
-    
+
     lemma_counts: Counter = Counter()
     for token in tokens:
         # Analysoidaan sana Voikolla
         results = v.analyze(token)
         if not results:
             continue
-        
+
         # Voikko järjestää tulokset todennäköisimmän mukaan – otetaan ensimmäinen tulos
         r = results[0]
         cls = r.get("class", "")
-        
+
         if cls in REJECTED_CLASSES:
             continue
-            
+
         baseform = r.get("baseform", token).lower()
-        
+
         # Suodatetaan yhdysviivalliset erikseen, jos perusmuoto päättyy viivaan
         baseform = baseform.strip("-")
-        
+
         if baseform in STOPWORDS or len(baseform) < MIN_WORD_LEN:
             continue
-            
+
         lemma_counts[baseform] += 1
-        
+
     # Palautetaan suosituimmat lemmat
     return [word for word, _ in lemma_counts.most_common(TOP_N_TAGS)]
 
@@ -117,7 +133,7 @@ def main() -> None:
 
     # Alustetaan BigQuery- ja Voikko-kirjastot
     bq_client = bigquery.Client(project=project)
-    
+
     try:
         v = libvoikko.Voikko("fi")
     except Exception as e:
@@ -135,7 +151,7 @@ def main() -> None:
     job_config = bigquery.QueryJobConfig(
         query_parameters=[bigquery.ScalarQueryParameter("batch_size", "INT64", batch_size)]
     )
-    
+
     try:
         rows = list(bq_client.query(query, job_config=job_config).result())
     except Exception as e:
@@ -155,7 +171,7 @@ def main() -> None:
     for row in rows:
         obj_id = row["id"]
         obj_json_raw = row["object_json"]
-        
+
         # Parseroidaan objektin raakateksti
         try:
             obj = json.loads(obj_json_raw) if isinstance(obj_json_raw, str) else obj_json_raw
@@ -176,12 +192,12 @@ def main() -> None:
 
     # 3. Päivitetään tulokset BigQueryyn väliaikaistaulun ja MERGE-lauseen avulla
     temp_table_id = f"{project}.{dataset}.tags_temp_{uuid.uuid4().hex}"
-    
+
     schema = [
         bigquery.SchemaField("id", "STRING", mode="REQUIRED"),
         bigquery.SchemaField("tags", "STRING", mode="REPEATED"),
     ]
-    
+
     load_config = bigquery.LoadJobConfig(
         write_disposition="WRITE_TRUNCATE",
         schema=schema
@@ -192,7 +208,7 @@ def main() -> None:
         load_job = bq_client.load_table_from_json(updates, temp_table_id, job_config=load_config)
         load_job.result()  # Odotetaan latausta
 
-        # Suoritetaan MERGE varsinaiseen tauluun. 
+        # Suoritetaan MERGE varsinaiseen tauluun.
         # tags_enriched asetetaan TRUE:ksi kaikille käsitellyille riveille.
         merge_query = f"""
             MERGE `{project}.{dataset}.objects` T
@@ -202,11 +218,11 @@ def main() -> None:
                     T.tags = S.tags,
                     T.tags_enriched = TRUE
         """
-        
+
         logger.info("Suoritetaan BigQuery MERGE-operaatio tagien päivittämiseksi...")
         bq_client.query(merge_query).result()
         logger.info(f"Rikastus valmis. Päivitetty {len(updates)} objektia.")
-        
+
     except Exception as e:
         logger.error(f"Virhe BigQueryyn tallennuksessa: {e}")
     finally:

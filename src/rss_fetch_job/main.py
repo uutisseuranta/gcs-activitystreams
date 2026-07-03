@@ -10,12 +10,27 @@ import sys
 import uuid
 from typing import Any, Dict, List, Optional
 
+import httpx
 from bs4 import BeautifulSoup
 from google.cloud import bigquery
-import httpx
+
 
 # Määritellään lokitustaso
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+class JsonFormatter(logging.Formatter):
+    def format(self, record):
+        log_entry = {
+            "severity": record.levelname,
+            "message": record.getMessage(),
+            "logger": record.name,
+            "time": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+        }
+        if record.exc_info:
+            log_entry["exception"] = self.formatException(record.exc_info)
+        return json.dumps(log_entry, ensure_ascii=False)
+
+handler = logging.StreamHandler()
+handler.setFormatter(JsonFormatter())
+logging.basicConfig(level=logging.INFO, handlers=[handler], force=True)
 logger = logging.getLogger("rss-fetch-job")
 
 
@@ -56,9 +71,9 @@ def discover_feed_url(page_url: str, timeout: int) -> Optional[str]:
         logger.info(f"Ajetaan autodiscovery osoitteelle: {target_url}")
         resp = httpx.get(target_url, timeout=timeout, follow_redirects=True)
         resp.raise_for_status()
-        
+
         soup = BeautifulSoup(resp.text, "lxml")
-        
+
         # 1. Yritetään ensin standardia <link rel="alternate">
         link = soup.find("link", rel="alternate", type="application/rss+xml")
         if link and link.get("href"):
@@ -68,7 +83,7 @@ def discover_feed_url(page_url: str, timeout: int) -> Optional[str]:
                 discovered_url = urljoin(target_url, discovered_url)
             logger.info(f"Löydettiin dynaaminen feed-URL: {discovered_url}")
             return discovered_url
-            
+
         # 2. Jos ei löydy, etsitään sivulta href-linkkejä, jotka päättyvät /rss
         logger.info("Standardia RSS-linkkiä ei löytynyt. Etsitään a-tageja...")
         for a in soup.find_all("a", href=True):
@@ -79,7 +94,7 @@ def discover_feed_url(page_url: str, timeout: int) -> Optional[str]:
                     href = urljoin(target_url, href)
                 logger.info(f"Löydettiin a-tagista dynaaminen feed-URL: {href}")
                 return href
-                
+
     except Exception as e:
         logger.error(f"Feed-autodiscovery epäonnistui osoitteelle {page_url}: {e}")
     return None
@@ -88,13 +103,13 @@ def discover_feed_url(page_url: str, timeout: int) -> Optional[str]:
 def get_or_discover_feed(bq_client: bigquery.Client, project: str, dataset: str, feed: Dict[str, Any], timeout: int) -> Optional[str]:
     """Hakee dynaamisen feedin osoitteen config-taulusta tai ajaa autodiscoveryn."""
     feed_name = feed["name"]
-    config_key = f"valtioneuvosto.rss_url" if feed_name == "valtioneuvosto" else f"rss.{feed_name}.rss_url"
-    
+    config_key = "valtioneuvosto.rss_url" if feed_name == "valtioneuvosto" else f"rss.{feed_name}.rss_url"
+
     # 1. Yritetään lukea config-taulusta
     query = f"""
-        SELECT value 
-        FROM `{project}.{dataset}.config` 
-        WHERE key = @key 
+        SELECT value
+        FROM `{project}.{dataset}.config`
+        WHERE key = @key
         LIMIT 1
     """
     job_config = bigquery.QueryJobConfig(
@@ -151,7 +166,7 @@ def fetch_rss_feed(feed_url: str, timeout: int) -> List[Dict[str, Any]]:
     # Parsitaan XML BeautifulSoupin xml-parserilla
     soup = BeautifulSoup(resp.content, "xml")
     items = soup.find_all("item")
-    
+
     parsed_items = []
     for item in items:
         # Otsikko
@@ -176,12 +191,12 @@ def fetch_rss_feed(feed_url: str, timeout: int) -> List[Dict[str, Any]]:
 
         # Kuva (media:thumbnail tai enclosure)
         image_url = None
-        
+
         # 1. media:thumbnail
         media_thumb = item.find("media:thumbnail") or item.find("thumbnail")
         if media_thumb and media_thumb.get("url"):
             image_url = media_thumb["url"]
-        
+
         # 2. enclosure type="image/*"
         if not image_url:
             enclosures = item.find_all("enclosure")
@@ -189,7 +204,7 @@ def fetch_rss_feed(feed_url: str, timeout: int) -> List[Dict[str, Any]]:
                 if enc.get("type", "").startswith("image/") and enc.get("url"):
                     image_url = enc["url"]
                     break
-        
+
         # 3. Fallback: kanavan oma kuva (ei item-kohtainen)
         if not image_url:
             channel_image = soup.find("image")
@@ -205,7 +220,7 @@ def fetch_rss_feed(feed_url: str, timeout: int) -> List[Dict[str, Any]]:
             "published": published_dt,
             "image_url": image_url
         })
-        
+
     return parsed_items
 
 
@@ -215,7 +230,7 @@ def build_as2_article(item: Dict[str, Any], source: str, domain: str) -> Dict[st
     # Lasketaan sha256 URL:sta ID:tä varten
     url_hash = hashlib.sha256(url.encode("utf-8")).hexdigest()
     as2_id = f"https://{domain}/ap/objects/articles/{source}/{url_hash}"
-    
+
     # Kartoitetaan lähde julkaisijaksi
     publisher_names = {
         "hs": "Helsingin Sanomat",
@@ -278,7 +293,7 @@ def write_to_bigquery(bq_client: bigquery.Client, project: str, dataset: str, ar
 
     # Luodaan uniikki temp-taulu tälle suoritukselle
     temp_table_id = f"{project}.{dataset}.objects_temp_{uuid.uuid4().hex}"
-    
+
     # Muunnetaan datetime ISO-merkkijonoksi ja object_json JSON-yhteensopivaksi
     rows_to_load = []
     for art in articles:
@@ -308,7 +323,7 @@ def write_to_bigquery(bq_client: bigquery.Client, project: str, dataset: str, ar
     load_job = bq_client.load_table_from_json(rows_to_load, temp_table_id, job_config=job_config)
     load_job.result()  # Odotetaan latauksen valmistumista
 
-    # Suoritetaan MERGE varsinaiseen tauluun. 
+    # Suoritetaan MERGE varsinaiseen tauluun.
     # Tärkeää: tags, tags_enriched, like_count ja deleted jätetään MATCHED-päivityksen ulkopuolelle
     merge_query = f"""
         MERGE `{project}.{dataset}.objects` T
@@ -362,7 +377,7 @@ def update_last_fetched_timestamp(bq_client: bigquery.Client, project: str, data
 
 def main() -> None:
     run_time = datetime.datetime.now(datetime.timezone.utc)
-    
+
     # Luetaan ympäristömuuttujat
     project = os.getenv("GCP_PROJECT")
     dataset = os.getenv("BQ_DATASET")
@@ -396,9 +411,9 @@ def main() -> None:
     logger.info(f"Käynnistetään haku. Projektitunnus: {project}, dataset: {dataset}")
 
     bq_client = bigquery.Client(project=project)
-    
+
     all_as2_articles = []
-    
+
     for feed in feeds:
         feed_name = feed.get("name")
         feed_url = feed.get("url")

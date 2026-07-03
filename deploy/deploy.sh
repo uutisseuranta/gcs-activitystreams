@@ -53,7 +53,17 @@ if [ ! -d "$SRC_DIR" ]; then
 fi
 
 echo "Building and pushing container using Cloud Build..."
+# Kopioidaan jaettu koodi build-kontekstiin
+if [ -d "src/shared" ]; then
+  cp -r src/shared "$SRC_DIR/shared"
+fi
+
+trap 'rm -rf "$SRC_DIR/shared"' EXIT
+
 gcloud builds submit --tag "$IMAGE" "$SRC_DIR" --project="$PROJECT" --gcs-source-staging-dir="gs://${PROJECT}-builds/source"
+
+rm -rf "$SRC_DIR/shared"
+trap - EXIT
 
 if [ "$TYPE" = "job" ]; then
   echo "Deploying Cloud Run Job..."
@@ -64,13 +74,27 @@ if [ "$TYPE" = "job" ]; then
     --service-account "$SA_EMAIL" \
     --project "$PROJECT"
 else
+  # Autentikoidut palvelut: Cloud Run IAM validoi pyynnön ennen sovellusta
+  # Julkiset palvelut: avoin data, ei autentikointia
+  AUTHENTICATED_SERVICES="write-api og-scraper"
+
+  if echo "$AUTHENTICATED_SERVICES" | grep -qw "$SERVICE"; then
+    AUTH_FLAG="--no-allow-unauthenticated"
+    echo "Auth: IAM-suojattu (--no-allow-unauthenticated)"
+  else
+    AUTH_FLAG="--allow-unauthenticated"
+    echo "Auth: Julkinen (--allow-unauthenticated)"
+  fi
+
   gcloud run deploy "$SERVICE" \
     --image "$IMAGE" \
     --region "$REGION" \
     --env-vars-file "$ENV_FILE" \
     --service-account "$SA_EMAIL" \
     --project "$PROJECT" \
-    --allow-unauthenticated
+    $AUTH_FLAG \
+    --liveness-probe=httpGet.path=/healthz \
+    --startup-probe=httpGet.path=/readyz
 fi
 
 echo "Deploy completed successfully!"

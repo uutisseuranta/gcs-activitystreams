@@ -113,7 +113,7 @@ assert clean_text("  ") == ""
 print("  ✓ clean_text: HTML-tagit, entiteetit, tyhjä merkkijono")
 
 # parse_feed: perusrakenne + pubDate-ohitus
-RSS_BASIC = b"""<?xml version="1.0"?>
+RSS_BASIC = """<?xml version="1.0"?>
 <rss version="2.0">
   <channel>
     <title>Testi</title>
@@ -128,7 +128,7 @@ RSS_BASIC = b"""<?xml version="1.0"?>
       <link>https://example.com/a2</link>
     </item>
   </channel>
-</rss>"""
+</rss>""".encode('utf-8')
 
 items = parse_feed(RSS_BASIC)
 assert len(items) == 1, f"Odotettu 1 artikkeli, saatiin {len(items)}"
@@ -139,7 +139,7 @@ assert items[0].url == "https://example.com/a1"
 print("  ✓ parse_feed: perusrakenne, pubDate-ohitus")
 
 # parse_feed: atom:updated fallback pubDatelle
-RSS_ATOM_UPDATED = b"""<?xml version="1.0"?>
+RSS_ATOM_UPDATED = """<?xml version="1.0"?>
 <rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
   <channel>
     <title>Atom-testi</title>
@@ -149,7 +149,7 @@ RSS_ATOM_UPDATED = b"""<?xml version="1.0"?>
       <atom:updated>2026-07-01T18:00:00Z</atom:updated>
     </item>
   </channel>
-</rss>"""
+</rss>""".encode('utf-8')
 
 items2 = parse_feed(RSS_ATOM_UPDATED)
 assert len(items2) == 1, f"atom:updated fallback epäonnistui: {len(items2)} kpl"
@@ -158,7 +158,7 @@ assert items2[0].published.hour == 18
 print("  ✓ parse_feed: atom:updated fallback pubDatelle")
 
 # parse_feed: kuvaprioriteetti (media:thumbnail > enclosure > kanava)
-RSS_IMAGES = b"""<?xml version="1.0"?>
+RSS_IMAGES = """<?xml version="1.0"?>
 <rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/">
   <channel>
     <title>Kuvatesti</title>
@@ -182,7 +182,7 @@ RSS_IMAGES = b"""<?xml version="1.0"?>
       <pubDate>Tue, 01 Jul 2026 17:00:00 +0000</pubDate>
     </item>
   </channel>
-</rss>"""
+</rss>""".encode('utf-8')
 
 imgs = parse_feed(RSS_IMAGES)
 assert imgs[0].image_url == "https://example.com/enc.jpg",  f"enclosure: {imgs[0].image_url}"
@@ -205,3 +205,12 @@ print("  ✓ parse_feed: puuttuva <channel> → []")
 
 print("\nKaikki yksikkötestit läpäisty ✓")
 EOF
+
+echo "Ajetaan shared-paketin unittest-testit..."
+export PYTHONPATH=src
+python3 -m unittest src/shared/test_og_parser.py
+
+echo "Ajetaan write_api-paketin unittest-testit..."
+python3 -m unittest src/write_api/test_main.py
+
+echo "Kaikki testit suoritettu onnistuneesti!"

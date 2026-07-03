@@ -1,0 +1,25 @@
+[tool.ruff]
+# Lähdekoodin sijainti — Ruff etsii Python-tiedostot täältä
+src = ["src"]
+# 120 merkkiä on salliva raja datapipeline-koodille jossa BQ-kyselyt ovat pitkiä
+line-length = 120
+# Kohde-Python-versio — vastaa Cloud Run -ympäristön versiota (tarkista Dockerfile)
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle: PEP8-muotosäännöt (sisennysongelmat, ylimääräiset välilyönnit)
+    "W",   # pycodestyle: PEP8-varoitukset (rivinpäätösongelmat, käyttämättömät muuttujat)
+    "F",   # pyflakes: kriittiset koodivirheet (käyttämättömät importit, määrittelemättömät nimet)
+    "I",   # isort: importtijärjestys (stdlib → third-party → local)
+    "B",   # flake8-bugbear: hiljaiset suunnitteluvirheet (esim. mutatoituva oletusparametri)
+    "S",   # flake8-bandit: SAST-tietoturvatarkistukset (kovakoodatut salasanat, subprocess-käyttö)
+    # ANN (type annotations) jätetty pois tarkoituksella — lisätään iteraation myöhemmässä vaiheessa
+]
+ignore = []
+
+[tool.ruff.lint.per-file-ignores]
+# S101: assert-lauseet testeissä eivät ole tietoturvaongelma (Bandit false positive)
+"**/test_*.py" = ["S101"]
+# HUOM: unit-test.sh on shell-skripti — Ruff ei koskaan tarkista sitä,
+# joten tämä rivi on poistettu (oli aiemmin harhaanjohtava)
