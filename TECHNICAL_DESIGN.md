@@ -834,15 +834,15 @@ Projektissa noudatetaan yhtenäistä versionumerointi- ja julkaisukäytäntöä 
 
 | # | Tiketti | Kuvaus |
 |---|---|---|
-| 4 | [#33](https://github.com/uutisseuranta/bq-activitystreams/issues/33) | feat: vastaanota Like/Dislike-aktiviteetit ja summaa Agree+Disagree-laskurit yhtenäiseen näkymään |
-
-#### Teema 3: Laadunvalvonta, testaus ja vakauttaminen (QA & Refactoring)
-
-| # | Tiketti | Kuvaus |
-|---|---|---|
-| 9  | [#27](https://github.com/uutisseuranta/bq-activitystreams/issues/27) | Testing: Poista koodiduplikaatio unit-test.sh -tiedostosta ja importtaa suoraan rss_fetch_jobista |
-| 10 | [#28](https://github.com/uutisseuranta/bq-activitystreams/issues/28) | Testing: Laajenna write-api:n yksikkötestejä (Create, Like, Update) |
-| 11 | [#29](https://github.com/uutisseuranta/bq-activitystreams/issues/29) | Testing: Lisää yksikkötestit query-api -lukurajapinnalle |
-| 12 | [#30](https://github.com/uutisseuranta/bq-activitystreams/issues/30) | Testing: Lisää yksikkötestit og-scraperille ja og-enrichment-jobille |
-
-Koko Iteraatio 3 scope (kaikki kolme repoa): ks. [uutisseuranta.github.io PR #32](https://github.com/uutisseuranta/uutisseuranta.github.io/pull/32)
+| 4 | [#33](https://github.com/uutisseuranta/bq-activitystreams/issues/33) | feat: vastaanota Like/Dislike-aktiviteetit BigQueryhin ja laske Agree+Disagree-summalaskurit per artikkeli (query-api suorittaa aggregointilaskennan BigQueryssa ja palauttaa valmiit laskurit JSON-vasteessa) |
+ 
+ #### Teema 3: Laadunvalvonta, testaus ja vakauttaminen (QA & Refactoring)
+ 
+ | # | Tiketti | Kuvaus |
+ |---|---|---|
+ | 9  | [#27](https://github.com/uutisseuranta/bq-activitystreams/issues/27) | Testing: jaettu logiikka `src/shared/fetch_helpers.sh`-moduliinsa — sekä `rss_fetch_job.sh` että `unit-test.sh` importtaavat sieltä (ei suoraa riippuvuutta tuotantokoodista testeihin) |
+ | 10 | [#28](https://github.com/uutisseuranta/bq-activitystreams/issues/28) | Testing: Laajenna write-api:n yksikkötestejä — kattaa happy path (Create, Like, Update) ja virhetilanteet (duplikaatti-Like 409, puuttuva actor 400, luvaton kirjoitus 403, tunnistautumaton pyyntö 401) |
+ | 11 | [#29](https://github.com/uutisseuranta/bq-activitystreams/issues/29) | Testing: Lisää yksikkötestit query-api -lukurajapinnalle — suodatus actor/object_id:llä, aikarajaus, sivutus, tyhjä tulos ([]), full-table scan -esto (pakollinen aikaväli-/partitiotarkistus) |
+ | 12 | [#30](https://github.com/uutisseuranta/bq-activitystreams/issues/30) | Testing: Lisää yksikkötestit og-scraperille ja og-enrichment-jobille — käytetään `unittest.mock.patch` HTTP-kutsujen mockaukseen, ja SQL MERGE -lausekkeen syntaksitestaus BigQuery Clientin `dry_run=True` -parametria hyödyntäen |
+ 
+ Koko Iteraatio 3 scope (kaikki kolme repoa): ks. [uutisseuranta.github.io PR #32](https://github.com/uutisseuranta/uutisseuranta.github.io/pull/32)
