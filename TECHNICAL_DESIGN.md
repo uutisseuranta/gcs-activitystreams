@@ -789,8 +789,14 @@ Projektissa käytetään **Ruff**-työkalua automaattiseen koodin laadun, tyylin
 - `unit-test.sh` on shell-skripti eikä Python-tiedosto — Ruff ei koskaan tarkista sitä, joten `per-file-ignores`-sääntö sille oli harhaanjohtava ja on poistettu.
 - `ANN` (type annotations) on jätetty pois `select`-listasta tarkoituksella — lisätään iteraation myöhemmässä vaiheessa kun koodipohja on vakiintunut.
 
+### Versionumerointi ja julkaisut (Release)
+Projektissa noudatetaan yhtenäistä versionumerointi- ja julkaisukäytäntöä kaikkien repositorioiden välillä:
+- **SemVer (Semantic Versioning):** Versionumerot noudattavat muotoa `vX.Y.Z` (esim. `v0.1.0`).
+- **Tagien luominen:** Uusi julkaisu luodaan tekemällä vastaava Git-tagi (`vX.Y.Z`) ja julkaisemalla se GitHub Releases -palvelussa.
+- **Julkaisuvastuu:** Jokaisesta tuotantoon viedystä merkittävästä välitavoitteesta (kuten Iteraatioiden valmistumisesta) luodaan virallinen SemVer-julkaisu.
+
 ### Yhteiset käytännöt useassa repossa
-"Teknologiavalintojen ensisijaisuusperiaate" ja "Draft PR -käytäntö" ovat identtiset kaikissa kolmessa repossa (`bq-activitystreams`, `uutisseuranta.github.io`, `patterns`). Tämä on tietoinen päätös: käytännöt toistuvat tarkoituksella koska yhteistä `organization-level CONTRIBUTING.md` -tiedostoa ei ole. Jos periaatteet muuttuvat, ne tulee päivittää kaikkiin kolmeen repoon.
+"Teknologiavalintojen ensisijaisuusperiaate", "Draft PR -käytäntö" ja "SemVer-versionumerointi" ovat identtiset kaikissa kolmessa repossa (`bq-activitystreams`, `uutisseuranta.github.io`, `patterns`). Tämä on tietoinen päätös: käytännöt toistuvat tarkoituksella koska yhteistä `organization-level CONTRIBUTING.md` -tiedostoa ei ole. Jos periaatteet muuttuvat, ne tulee päivittää kaikkiin kolmeen repoon.
 
 ---
 
