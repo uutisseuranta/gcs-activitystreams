@@ -788,9 +788,9 @@ Kun käsitellään avointa dataa (kuten RSS-syötteitä tai ulkoisia datasettej�
 
 ---
 
-### Luonnos-Pull Requestit (Draft PR) ja kysymykset kontekstissa
-Monimutkaiset tai laajat kokonaisuudet voidaan aloittaa avaamalla luonnos-Pull Request (Draft PR).
-- PR voi aluksi olla tyhjä runko, johon kirjataan toteutusvaihtoehdot.
+### Luonnos-Pull Requestit (Draft PR) ja alkudeploy (Skeletal Deploy)
+Monimutkaiset tai uudet ominaisuudet aloitetaan viemällä kevyt runko, tyhjät API-rajapinnat ja koodikommentit (Draft PR tai alkudeploy) arvioitavaksi ennen varsinaisen toiminnallisuuden toteutusta.
+- Tämä mahdollistaa arkkitehtuurin, arkkitehtuurirajojen ja koodin kommentoinnin katselmoinnin aikaisessa vaiheessa ennen laajempaa koodaamista.
 - Avoimet arkkitehtuurikysymykset jätetään Pull Requestin kommenteiksi koodikontekstiin, jolloin niistä keskusteleminen ja päättäminen on luontevaa suoraan GitHubissa.
 
 ### Koodin laadun ja tietoturvan valvonta (Ruff)
