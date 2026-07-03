@@ -1,4 +1,26 @@
 # src/write_api/main.py
+#
+# ActivityStreams Write API – HTTP-rajapinta aktiviteettien vastaanottamiseen
+#
+# Vastaa:
+#   - Like, Create (Note), Delete, Update -aktiviteettien vastaanottamisesta
+#   - Google OIDC JWT -autentikoinnista (loppukäyttäjä + service-to-service)
+#   - Aktiviteettien tallentamisesta kahteen BigQuery-datasetiin:
+#       {BQ_DATASET}.objects         → julkinen artikkelidata
+#       {BQ_SOCIAL_DATASET}.activities → sosiaalinen lokitaulu (append-only)
+#       {BQ_SOCIAL_DATASET}.likes    → tykkayslookup (duplikaattisuojaus)
+#
+# Arkkitehtuuriraja:
+#   Kaikki kirjoitukset kahdelle BQ-datasetille tapahtuvat tässä tiedostossa.
+#   Query-API (query_api/main.py) on read-only — se ei kirjoita koskaan.
+#   og-scraper (og_scraper/) kirjoittaa vain {BQ_DATASET}.objects-tauluun.
+#
+# Ympäristömuuttujat (pakolliset):
+#   GCP_PROJECT, BQ_DATASET, GOOGLE_CLIENT_ID
+# Ympäristömuuttujat (valinnaiset):
+#   BQ_SOCIAL_DATASET (oletus: activitystreams_social)
+#   CLOUD_RUN_SERVICE_URL (service-to-service audience)
+#   ALLOW_MOCK_AUTH     (vain testi/dev, ei koskaan tuotannossa)
 import datetime
 import json
 import logging
@@ -57,7 +79,7 @@ def verify_auth_token(auth_header: Optional[str]) -> str:
     - CLOUD_RUN_SERVICE_URL: service-to-service OIDC-tokeni (Cloud Scheduler, jobit)
     """
     if not auth_header or not auth_header.startswith("Bearer "):
-        logger.warning("Autentikaatio hylätty: Authorization-otsake puuttuu tai virheellinen")
+        logger.warning("Autentikaatio hyjätty: Authorization-otsake puuttuu tai virheellinen")
         raise HTTPException(status_code=401, detail="Missing or invalid Authorization header.")
 
     token = auth_header.split(" ")[1]
@@ -78,7 +100,7 @@ def verify_auth_token(auth_header: Optional[str]) -> str:
             )
 
             if not id_info.get("email_verified"):
-                logger.warning(f"Autentikaatio hylätty: email_verified=false, sub={id_info.get('sub')}")
+                logger.warning(f"Autentikaatio hyjätty: email_verified=false, sub={id_info.get('sub')}")
                 raise HTTPException(status_code=403, detail="Email domain must be verified.")
 
             logger.info(f"Autentikaatio onnistui: sub={id_info['sub']}, aud={audience}")
@@ -89,12 +111,19 @@ def verify_auth_token(auth_header: Optional[str]) -> str:
             last_error = e
             continue
 
-    logger.warning(f"Autentikaatio hylätty: tokeni ei kelpaa millekään audience-arvolle. Virhe: {last_error}")
+    logger.warning(f"Autentikaatio hyjätty: tokeni ei kelpaa millekaan audience-arvolle. Virhe: {last_error}")
     raise HTTPException(status_code=401, detail="Authentication failed.")
 
 
 def get_object_by_id(obj_id: str) -> Optional[Dict[str, Any]]:
-    """Hakee objektin julkisesta objects-taulusta id:n perusteella."""
+    """Hakee objektin julkisesta objects-taulusta id:n perusteella.
+
+    BQ-kustannusriski: kysely käyttää parametrisoitua WHERE id = @id -ehtoa.
+    objects-taulussa id on klusteroitu sarake (CLUSTER BY id) — BigQuery
+    rajaa luettavat lohkot automaattisesti eikä tee full-table scania.
+    Jos klusterointi poistetaan, tämä kysely muuttuu full-table scaniksi.
+    Katso tiketti #29 ennen rakennemuutoksia.
+    """
     query = f"""
         SELECT id, source, object_json, deleted, like_count
         FROM `{PROJECT}.{DATASET}.objects`
@@ -121,7 +150,13 @@ def get_object_by_id(obj_id: str) -> Optional[Dict[str, Any]]:
 
 
 def get_comments_count_by_actor(actor: str, object_id: str) -> int:
-    """Laskee kuinka monta aktiviteettia tietty actor on tehnyt kyseiseen kohteeseen."""
+    """Laskee kuinka monta aktiviteettia tietty actor on tehnyt kyseiseen kohteeseen.
+
+    BQ-kustannusriski: activities-taulussa ei ole klusterointia actor-sarakkeelle.
+    Tämä kysely voi tehdä full-table scanin suurella datalla.
+    Harkitse klusterointia (actor, object_id) jos aktiviteettimäärä kasvaa yli 10M riviin.
+    Katso tiketti #29.
+    """
     query = f"""
         SELECT COUNT(*) AS c
         FROM `{PROJECT}.{SOCIAL_DATASET}.activities`
@@ -142,7 +177,13 @@ def get_comments_count_by_actor(actor: str, object_id: str) -> int:
 
 
 def check_like_exists(actor: str, object_id: str) -> bool:
-    """Tarkistaa onko käyttäjä jo tykännyt kohteesta sosiaalisessa kannassa."""
+    """Tarkistaa onko käyttäjä jo tykännyt kohteesta sosiaalisessa kannassa.
+
+    BQ-kustannusriski: likes-taulussa WHERE actor + object_id -ehto.
+    Taulu on klusteroitu (object_id, actor) — BigQuery rajaa lohkot.
+    LIMIT 1 varmistaa että skannaus pysähtyy heti ensimmäiseen löydökseen.
+    Katso tiketti #29.
+    """
     query = f"""
         SELECT 1
         FROM `{PROJECT}.{SOCIAL_DATASET}.likes`
@@ -164,7 +205,7 @@ def check_like_exists(actor: str, object_id: str) -> bool:
 
 @app.post("/ap/activities")
 def post_activity(activity: Dict[str, Any], authorization: Optional[str] = Header(None)):
-    # 1. Autentikoidaan pyyntö
+    # 1. Autentikoidaan pyynto
     sub = verify_auth_token(authorization)
     actor_id = f"https://activitystreams.uutisseuranta.net/ap/users/{sub}"
 
@@ -263,7 +304,7 @@ def post_activity(activity: Dict[str, Any], authorization: Optional[str] = Heade
             grandparent = get_object_by_id(parent_in_reply_to) if parent_in_reply_to else None
 
             if grandparent and grandparent["object_json"].get("type") == "Note":
-                # Tämä olisi taso 3, hylätään!
+                # Tämä olisi taso 3, hyjätään!
                 raise HTTPException(status_code=400, detail="Reply thread depth limit exceeded (max 2 levels).")
 
             # thread_root saadaan parentin thread_rootista
@@ -465,7 +506,7 @@ def liveness():
 @app.get("/readyz")
 def readiness():
     try:
-        # Kevyt BigQuery-yhteyden tarkistus
+        # Kevät BigQuery-yhteyden tarkistus
         bq_client.list_datasets(max_results=1)
         return {"status": "ready"}
     except Exception as e:
