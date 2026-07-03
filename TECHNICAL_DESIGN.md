@@ -821,3 +821,28 @@ Projektissa noudatetaan yhtenäistä versionumerointi- ja julkaisukäytäntöä 
 - #17 Logging ja monitoring
 - #18 objects_pending-skeema
 - #19 Gmail SSO → IAM-rooli -mappaus kirjoituspalvelulle
+
+---
+
+## Iteraatiot
+
+### Iteraatio 3 — Scope
+
+> **Suunniteltu:** 2026-07-03 | **Arviointijakso:** Iteraation 3 sprintti
+
+#### Teema 2: Käyttäjävuorovaikutus (Like / Dislike & Agree / Disagree)
+
+| # | Tiketti | Kuvaus |
+|---|---|---|
+| 4 | [#33](https://github.com/uutisseuranta/bq-activitystreams/issues/33) | feat: vastaanota Like/Dislike-aktiviteetit ja summaa Agree+Disagree-laskurit yhtenäiseen näkymään |
+
+#### Teema 3: Laadunvalvonta, testaus ja vakauttaminen (QA & Refactoring)
+
+| # | Tiketti | Kuvaus |
+|---|---|---|
+| 9  | [#27](https://github.com/uutisseuranta/bq-activitystreams/issues/27) | Testing: Poista koodiduplikaatio unit-test.sh -tiedostosta ja importtaa suoraan rss_fetch_jobista |
+| 10 | [#28](https://github.com/uutisseuranta/bq-activitystreams/issues/28) | Testing: Laajenna write-api:n yksikkötestejä (Create, Like, Update) |
+| 11 | [#29](https://github.com/uutisseuranta/bq-activitystreams/issues/29) | Testing: Lisää yksikkötestit query-api -lukurajapinnalle |
+| 12 | [#30](https://github.com/uutisseuranta/bq-activitystreams/issues/30) | Testing: Lisää yksikkötestit og-scraperille ja og-enrichment-jobille |
+
+Koko Iteraatio 3 scope (kaikki kolme repoa): ks. [uutisseuranta.github.io PR #32](https://github.com/uutisseuranta/uutisseuranta.github.io/pull/32)
