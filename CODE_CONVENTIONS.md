@@ -7,27 +7,46 @@
 > - [uutisseuranta/uutisseuranta.github.io](https://github.com/uutisseuranta/uutisseuranta.github.io)
 > - [uutisseuranta/patterns](https://github.com/uutisseuranta/patterns)
 > - [uutisseuranta/jira-github-integration](https://github.com/uutisseuranta/jira-github-integration)
+> - [uutisseuranta/bq-activitystreams](https://github.com/uutisseuranta/bq-activitystreams)
+> - [uutisseuranta/skills](https://github.com/uutisseuranta/skills)
 
 ---
 
-## Tiedostorakenne
+## Dokumentin rakenne ja soveltaminen
+
+Tämä ohjeisto jakautuu kahteen pääosaan:
+1. **Kanoniset (yhteiset) käytännöt** (Tiedostorakenne, nimeäminen, linkit, versionhallinta, commitit) — koskevat kaikkia organisaation repositorioita.
+2. **Repokohtaiset käytännöt** (Kommentointi, linttaustyökalut) — sovelletaan kunkin repon käyttämän teknologiapinon mukaan.
+
+Jokainen repositorio ylläpitää omaa paikallista `DESIGN_GUIDELINES.md` ja `STANDARDS.md` -ohjeistoaan, jotka kuvaavat vain kyseisen palvelun omia käyttöliittymä-, asettelu- ja teknologiapinostandardeja (katso [DECISION_LOG.csv](file:///Users/jaakkokorhonen/uutisseuranta/DECISION_LOG.csv) -> G-004).
+
+---
+
+## 1. Kanoniset (yhteiset) käytännöt
+
+### Tiedostorakenne
 
 **Kaikki tiedostot sijaitsevat repositorion juuressa. Alikansioita ei käytetä.**
 
-Poikkeus: `.github/`-hakemisto on sallittu **GitHubin omaa infrastruktuuria** varten (Actions-workflowt, issue-templatet, Dependabot-konfiguraatio jne.). `.github/` ei ole tarkoitettu repon omille tiedostoille — sinne ei sijoiteta dokumentaatiota, skriptejä, konfiguraatioita eikä muita projektin tiedostoja.
+Sallitut poikkeukset kaikissa repoissa:
+
+- `.github/` — GitHubin omaa infrastruktuuria varten (Actions-workflowt, issue-templatet, Dependabot-konfiguraatio jne.). `.github/` ei ole tarkoitettu repon omille tiedostoille — sinne ei sijoiteta dokumentaatiota, skriptejä, konfiguraatioita eikä muita projektin tiedostoja.
+- `skill-*/` — **vain `skills`-repossa**: Perplexity-agenttiskillit hakemistorakenteella `skill-<nimi>/SKILL.md`. Muissa repoissa ei käytetä `skill-*/`-hakemistoja.
 
 ```
 repo/
 ├── .github/               ← VAIN GitHub-infrastruktuuri (Actions, issue-templatet)
 │   └── workflows/
 │       └── *.yml
-├── skill-(käyttötarkoitus).yml  ← MML-skill-konfiguraatiot, juuressa
+├── skill-<nimi>/          ← VAIN skills-repossa: Perplexity-skill-hakemistot
+│   └── SKILL.md
+├── skill-(käyttötarkoitus).yml  ← MML/ops-konfiguraatiot, juuressa (kaikki repot)
 ├── SOPIMUSDOKUMENTTI.md   ← SCREAMING_SNAKE_CASE-dokumentit juuressa
 ├── tiedosto.ext           ← muu kebab-case-lähdekoodisto juuressa
 └── ...
 ```
 
-Perustelu (D-009): Projekteissa on vähän tiedostoja. Hakemistorakenne ei tuo lisäarvoa — se lisää navigaatiokulua ilman hyötyä. Kaikki tiedostot löytyvät yhdestä paikasta.
+Perustelu (katso [DECISION_LOG.csv](file:///Users/jaakkokorhonen/uutisseuranta/DECISION_LOG.csv) -> G-001): Projekteissa on vähän tiedostoja. Hakemistorakenne ei tuo lisäarvoa — se lisää navigaatiokulua ilman hyötyä. Kaikki tiedostot löytyvät yhdestä paikasta. `skill-*/`-poikkeus on skills-repokohtainen ja perusteltu: Perplexity-skillit ovat itsenäisiä dokumentaatioyksikköjä, jotka tarvitsevat oman hakemiston `load_skill`-mekanismin vuoksi.
 
 ---
 
@@ -47,9 +66,13 @@ PATTERNS_CATALOG.md
 USER_PATHS.md
 ```
 
-Perustelu (D-002, uutisseuranta.github.io): Erottaa sopimukset ja normatiiviset dokumentit ops-tiedostoista ja lähdekoodista. Yhtenäinen nimeäminen kaikkien repojen välillä.
+Perustelu (katso [DECISION_LOG.csv](file:///Users/jaakkokorhonen/uutisseuranta/DECISION_LOG.csv) -> G-002): Erottaa sopimukset ja normatiiviset dokumentit ops-tiedostoista ja lähdekoodista. Yhtenäinen nimeäminen kaikkien repojen välillä.
 
-### Skill-tiedostot — `skill-(käyttötarkoitus).yml`
+### Skill-tiedostot — kaksi formaattia
+
+Organisaatiossa on kaksi erillisistä käyttötarkoituksesta johtuvaa skill-formaattia:
+
+**Formaatti A — MML/ops-konfiguraatiot (kaikki repot)**
 
 MML-skill-konfiguraatiot nimetään muodossa `skill-(käyttötarkoitus).yml` ja sijoitetaan **repositorion juureen**.
 
@@ -67,6 +90,41 @@ Nimeämissäännöt:
 - Formaatti: `.yml` (ei `.yaml`)
 
 Perustelu: Claudelint-spesifikaation skill-nimikäytäntö (lowercase-with-hyphens, max 64 merkkiä) sovellettuna tähän projektiin. `skill-`-prefix tekee tiedostot tunnistettaviksi hakemistolistauksessa ilman hakemistorakennetta. Skillit ovat repokohtaisia YAML-konfiguraatioita, eivät sopimusdokumentteja — siksi ne eivät käytä `SCREAMING_SNAKE_CASE`-muotoa.
+
+**Formaatti B — Perplexity-agenttiskillit (vain `skills`-repo)**
+
+Perplexity-agentin `load_skill`-kutsulla ladattavat skillit sijaitsevat `skills`-repossa hakemistorakenteella `skill-<nimi>/SKILL.md`.
+
+```
+skill-code-conventions/
+└── SKILL.md
+skill-decision-log/
+└── SKILL.md
+```
+
+Hakemiston nimi (`<nimi>`) on se tunniste, jolla skill ladataan: `load_skill(skill_names=["<nimi>"])`. Nimi noudattaa samaa `kebab-case`-käytäntöä kuin Formaatti A.
+
+`SKILL.md` sisältää YAML front matterin ja markdown-rungon:
+
+```markdown
+---
+name: <nimi>
+description: Lyhyt kuvaus skillin tarkoituksesta
+version: 1.0.0
+---
+
+# Skillin otsikko
+
+Skillin sisältö markdown-muodossa.
+```
+
+Nimeämissäännöt:
+- Hakemisto: `skill-<nimi>/` — `kebab-case`, prefix `skill-` pakollinen
+- Tiedosto hakemiston sisällä: aina `SKILL.md` (`SCREAMING_SNAKE_CASE`, koska normatiivinen sopimusdokumentti)
+- YAML front matter: `name`, `description`, `version` ovat pakollisia kenttiä
+- Formaatti: `.md`
+
+Perustelu: Perplexity-agentin `load_skill`-mekanismi tunnistaa skillit hakemistonimen perusteella. `SKILL.md`-tiedosto on sekä ihmis- että agenttiluettava dokumentaatio, joka eroaa konekäyttöisestä YAML-konfiguraatiosta (Formaatti A) — siksi eri rakenne on perusteltu.
 
 ### Lähdekooditiedostot — `kebab-case`
 
@@ -109,7 +167,7 @@ Kaikki viittaukset toisiin repositorioihin kirjoitetaan **absoluuttisina GitHub-
 [TECHNICAL_DESIGN.md](../jira-github-integration/TECHNICAL_DESIGN.md)
 ```
 
-Perustelu (D-002, uutisseuranta.github.io): Relatiiviset polut eivät toimi GitHubissa cross-repo-viittauksissa.
+Perustelu (katso [DECISION_LOG.csv](file:///Users/jaakkokorhonen/uutisseuranta/DECISION_LOG.csv) -> G-002): Relatiiviset polut eivät toimi GitHubissa cross-repo-viittauksissa.
 
 ---
 
@@ -125,11 +183,53 @@ v2.0.0   ← breaking change
 
 Git-tagit luodaan tällä muodolla. GitHub Releases käyttää samaa tunnistetta.
 
-Perustelu (D-002, uutisseuranta.github.io): Yhtenäiset julkaisukäytännöt kaikkien repojen välillä.
+| Muutos | SemVer | Kuvaus |
+|--------|--------|--------|
+| Bugikorjaus, dokumentaatio | `vX.Y.Z+1` | patch — ei breaking changeja |
+| Uusi toiminnallisuus, taaksepäin yhteensopiva | `vX.Y+1.0` | minor |
+| Breaking change, API-muutos | `vX+1.0.0` | major |
+
+Perustelu (katso [DECISION_LOG.csv](file:///Users/jaakkokorhonen/uutisseuranta/DECISION_LOG.csv) -> G-002): Yhtenäiset julkaisukäytännöt kaikkien repojen välillä.
 
 ---
 
-## Koodin kommentointi
+## Commit-viestit
+
+Kaikki commit-viestit noudattavat **Conventional Commits** -muotoa:
+
+```
+<type>(<scope>): <kuvaus>
+```
+
+`type`-arvot:
+
+| type | Käyttö |
+|------|--------|
+| `feat` | Uusi toiminnallisuus |
+| `fix` | Bugikorjaus |
+| `docs` | Dokumentaatio |
+| `chore` | Ylläpito, riippuvuudet, konfiguraatio |
+| `refactor` | Koodirakenne ilman toiminnallista muutosta |
+| `test` | Testit |
+| `ci` | GitHub Actions -muutokset |
+
+`scope` on valinnainen ja viittaa repo-nimeen tai komponenttiin:
+
+```
+feat(patterns): lisää regex-pattern uutisotsikoille
+fix(jira-sync): korjaa webhook-duplikaatti
+docs: päivitä CODE_CONVENTIONS versionumerointiohje
+chore(deps): päivitä firebase 10.x → 11.x
+ci: lisää yamllint-tarkistus workflowhin
+```
+
+Perustelu (katso [DECISION_LOG.csv](file:///Users/jaakkokorhonen/uutisseuranta/DECISION_LOG.csv) -> G-003): Yhdenmukainen commit-historia mahdollistaa automaattisen CHANGELOG-generoinnin ja helpottaa `git log`-selailua. Kytkeytyy suoraan DECISION_LOG-merkintöihin.
+
+---
+
+## 2. Repokohtaiset käytännöt
+
+### Koodin kommentointi
 
 ### Periaate
 
@@ -196,7 +296,7 @@ font-size: clamp(0.75rem, ...);
 # Käyttö: ./live-smoke-test.sh https://uutisseuranta.fi
 ```
 
-### YAML (GitHub Actions & skill-tiedostot)
+### YAML (GitHub Actions & muut konfiguraatiot)
 
 ```yaml
 # Yksiriviset: #
@@ -218,14 +318,46 @@ def get_prefs(uid: str) -> dict:
 
 ---
 
+## Automaattinen tarkistus
+
+Konventioiden automaattinen tarkistus on **repokohtaista** — jokainen repo määrittelee `.github/workflows/`-hakemistossaan omat tarkistuksensa sen mukaan, mitä kieliä ja formaatteja se käyttää. Tarkistustyökalut ja konfiguraatiot eivät kuulu tähän kanoniseen dokumenttiin.
+
+Suositeltavat työkalut repokohtaiseen harkintaan:
+
+| Kieli / formaatti | Työkalu | Huomio |
+|-------------------|---------|--------|
+| JavaScript | `eslint` | `.eslintrc.json` repokohtainen |
+| Bash | `shellcheck` | ei erillistä konfiguraatiota |
+| YAML | `yamllint` | `.yamllint` repokohtainen |
+| Markdown | `markdownlint` | `.markdownlint.json` repokohtainen |
+
+Perustelu: Repojen kielivalikoima vaihtelee — `bq-activitystreams` tarvitsee eri tarkistukset kuin `uutisseuranta.github.io`. Pakollinen yhteinen tooling-lista vanhentuisi nopeasti ja rajoittaisi repojen kehitystä tarpeettomasti. Enforcement-periaate (konventiot tarkistetaan CI:ssä) on kuitenkin yhteinen.
+
+---
+
 ## Päätösloki
 
-Kaikki arkkitehtuuripäätökset kirjataan repokohtaiseen `DECISION_LOG.csv`-tiedostoon.
+Kaikki arkkitehtuuripäätökset kirjataan repokohtaiseen [DECISION_LOG.csv](file:///Users/jaakkokorhonen/uutisseuranta/DECISION_LOG.csv) -tiedostoon.
 
-```
+Esimerkki uutisseuranta.github.io -repositorion päätöksistä:
+```csv
 id,date,title,decision,rationale,affects_issues
-D-001,...
+G-002,2026-07-04,Cross-repo links,Use absolute GitHub URLs for cross-repository links,Relative paths do not resolve correctly across different GitHub repositories,CODE_CONVENTIONS.md
+G-001,2026-07-04,Flat directory structure,Keep all project files in the repository root directory with minimal exceptions (.github/ and skill-*/),Flat structures reduce navigation overhead and simplify path management in small projects,CODE_CONVENTIONS.md;DESIGN_GUIDELINES.md
 ```
 
 Jira-integraation päätösloki:
-[jira-github-integration/DECISION_LOG.csv](https://github.com/uutisseuranta/jira-github-integration/blob/main/DECISION_LOG.csv)
+[jira-github-integration / DECISION_LOG.csv](https://github.com/uutisseuranta/jira-github-integration/blob/main/DECISION_LOG.csv)
+
+---
+
+## Poikkeukset konventiosta
+
+Jos tekninen syy (esim. kolmannen osapuolen kirjaston nimikonventiokonflikti tai tooling-rajoite) pakottaa poikkeamaan tästä dokumentista:
+
+1. Kirjaa poikkeus repokohtaiseen `DECISION_LOG.csv`-tiedostoon erillisellä `D-xxx`-merkinnällä
+2. Merkitse `rationale`-kenttään syy ja poikkeuksen laajuus
+3. Lisää `affects_issues`-kenttään tieto siitä, mihin konventioon poikkeus kohdistuu
+4. Poikkeuksella on revisiopäivä: palaa arvioimaan poikkeuksen tarpeellisuutta seuraavan major-version yhteydessä
+
+Poikkeusta ei saa tehdä hiljaa — dokumentoimaton poikkeus on rikkomus, dokumentoitu poikkeus on tietoinen päätös.
