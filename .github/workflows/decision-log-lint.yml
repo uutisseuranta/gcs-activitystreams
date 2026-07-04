@@ -1,0 +1,67 @@
+# Tarkistaa DECISION_LOG.csv:n eheyden PR:ssä
+# Ajetaan kun PR muuttaa DECISION_LOG.csv:tä
+
+name: Lint DECISION_LOG
+
+on:
+  pull_request:
+    paths:
+      - "DECISION_LOG.csv"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tarkista pakollinen header
+        run: |
+          EXPECTED="id,date,scope,status,summary,ops_ref"
+          HEADER=$(head -1 DECISION_LOG.csv)
+          if [ "$HEADER" != "$EXPECTED" ]; then
+            echo "❌ Header väärä."
+            echo "   Odotettu: $EXPECTED"
+            echo "   Löytyi:   $HEADER"
+            exit 1
+          fi
+          echo "✅ Header OK"
+
+      - name: Tarkista duplikaatti-ID:t
+        run: |
+          DUPES=$(tail -n +2 DECISION_LOG.csv | cut -d',' -f1 | sort | uniq -d)
+          if [ -n "$DUPES" ]; then
+            echo "❌ Duplikaatti-ID:t löytyi:"
+            echo "$DUPES"
+            exit 1
+          fi
+          echo "✅ Ei duplikaatteja"
+
+      - name: Tarkista kanoniset rivit — OPS-REF vaaditaan
+        run: |
+          # Kanoninen = scope-sarake (3.) on "org-wide" tai "all-repos"
+          # Näillä riveillä ops_ref-sarake (6.) ei saa olla tyhjä
+          MISSING=$(tail -n +2 DECISION_LOG.csv | awk -F',' '
+            $3 ~ /org-wide|all-repos/ && ($6 == "" || $6 ~ /^[[:space:]]*$/) {
+              print "Rivi " NR+1 ": " $0
+            }
+          ')
+          if [ -n "$MISSING" ]; then
+            echo "❌ Kanoninen päätös ilman ops_ref-viittausta:"
+            echo "$MISSING"
+            exit 1
+          fi
+          echo "✅ Kanoniset viittaukset OK"
+
+      - name: Tarkista päivämäärämuoto (YYYY-MM-DD)
+        run: |
+          BADDATES=$(tail -n +2 DECISION_LOG.csv | awk -F',' '
+            $2 !~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/ {
+              print "Rivi " NR+1 ": date-sarake on \"" $2 "\""
+            }
+          ')
+          if [ -n "$BADDATES" ]; then
+            echo "❌ Virheellinen päivämäärämuoto (odotetaan YYYY-MM-DD):"
+            echo "$BADDATES"
+            exit 1
+          fi
+          echo "✅ Päivämäärämuodot OK"
