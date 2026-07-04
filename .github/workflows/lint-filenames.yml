@@ -1,0 +1,88 @@
+name: Lint filenames
+
+on:
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Hae PR:ssä muuttuneet tiedostot
+        id: changed
+        run: |
+          FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
+          echo "files<<EOF" >> $GITHUB_OUTPUT
+          echo "$FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: A) Tarkista tiedostonimikonventio
+        run: |
+          # Sallittu: a-z, A-Z, 0-9, -, _, ., /
+          # Kielletty: välilyönnit, ääkköset, erikoismerkit
+          FAIL=0
+          while IFS= read -r FILE; do
+            BASENAME=$(basename "$FILE")
+            if echo "$BASENAME" | grep -qP '[^a-zA-Z0-9_.\-]'; then
+              echo "❌ Kielletty merkki tiedostonimessä: $FILE"
+              FAIL=1
+            fi
+          done <<< "${{ steps.changed.outputs.files }}"
+          [ $FAIL -eq 0 ] && echo "✅ Tiedostonimet OK"
+          exit $FAIL
+
+      - name: B) Tarkista kielletyt tiedostonimet
+        run: |
+          FORBIDDEN_PATTERNS=(
+            "TODO.md"
+            "FIXME.md"
+            "temp-*"
+            "tmp-*"
+            "test-copy-*"
+            "copy-of-*"
+            "backup-*"
+          )
+          FAIL=0
+          while IFS= read -r FILE; do
+            BASENAME=$(basename "$FILE")
+            for PAT in "${FORBIDDEN_PATTERNS[@]}"; do
+              if [[ "$BASENAME" == $PAT ]]; then
+                echo "❌ Kielletty tiedostonimi: $FILE (vastaa kuviota $PAT)"
+                FAIL=1
+              fi
+            done
+          done <<< "${{ steps.changed.outputs.files }}"
+          [ $FAIL -eq 0 ] && echo "✅ Ei kiellettyiä tiedostonimiä"
+          exit $FAIL
+
+      - name: C) Tarkista kielletyt tiedostopäätteet
+        run: |
+          FORBIDDEN_EXTS=("bak" "tmp" "orig" "DS_Store" "swp" "swo")
+          FAIL=0
+          while IFS= read -r FILE; do
+            EXT="${FILE##*.}"
+            for FE in "${FORBIDDEN_EXTS[@]}"; do
+              if [ "$EXT" = "$FE" ]; then
+                echo "❌ Kielletty pääte: $FILE"
+                FAIL=1
+              fi
+            done
+          done <<< "${{ steps.changed.outputs.files }}"
+          [ $FAIL -eq 0 ] && echo "✅ Ei kiellettyiä päätteitä"
+          exit $FAIL
+
+      - name: D) Tarkista että .env-tiedostoja ei commitoida
+        run: |
+          FAIL=0
+          while IFS= read -r FILE; do
+            BASENAME=$(basename "$FILE")
+            if [[ "$BASENAME" == .env || "$BASENAME" == .env.* ]]; then
+              echo "❌ .env-tiedosto commitoitu: $FILE"
+              FAIL=1
+            fi
+          done <<< "${{ steps.changed.outputs.files }}"
+          [ $FAIL -eq 0 ] && echo "✅ Ei .env-tiedostoja"
+          exit $FAIL
