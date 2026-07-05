@@ -10,9 +10,13 @@ os.environ["BQ_SOCIAL_DATASET"] = "test_social_dataset"
 os.environ["GOOGLE_CLIENT_ID"] = "test-client-id"
 os.environ["ALLOW_MOCK_AUTH"] = "true"
 
-from fastapi.testclient import TestClient
+# Mockataan BigQuery-asiakas ennen main.py:n importtausta, jotta vältetään DefaultCredentialsError CI:ssä
+import google.cloud.bigquery  # noqa: E402, I001
+google.cloud.bigquery.Client = MagicMock()
 
-from write_api.main import app
+from fastapi.testclient import TestClient  # noqa: E402, I001
+
+from write_api.main import app  # noqa: E402, I001
 
 
 class TestDeleteActivity(unittest.TestCase):
