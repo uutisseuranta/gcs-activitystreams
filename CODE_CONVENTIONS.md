@@ -224,7 +224,8 @@ Kaikki arkkitehtuuripäätökset kirjataan repokohtaiseen `DECISION_LOG.csv`-tie
 
 ```
 id,date,title,decision,rationale,affects_issues
-D-001,...
+G-001,2026-07-04,Flat directory structure,...
+L-001,2026-07-05,Ruff linter false positives bypass,Ignore specific Ruff lint rules (S608; S105; B008; S110; B904; E501) in pyproject.toml,...
 ```
 
 Jira-integraation päätösloki:

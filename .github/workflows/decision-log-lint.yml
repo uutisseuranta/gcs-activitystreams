@@ -16,7 +16,7 @@ jobs:
 
       - name: Tarkista pakollinen header
         run: |
-          EXPECTED="id,date,scope,status,summary,ops_ref"
+          EXPECTED="id,date,title,decision,rationale,affects_issues"
           HEADER=$(head -1 DECISION_LOG.csv)
           if [ "$HEADER" != "$EXPECTED" ]; then
             echo "❌ Header väärä."
@@ -35,22 +35,6 @@ jobs:
             exit 1
           fi
           echo "✅ Ei duplikaatteja"
-
-      - name: Tarkista kanoniset rivit — OPS-REF vaaditaan
-        run: |
-          # Kanoninen = scope-sarake (3.) on "org-wide" tai "all-repos"
-          # Näillä riveillä ops_ref-sarake (6.) ei saa olla tyhjä
-          MISSING=$(tail -n +2 DECISION_LOG.csv | awk -F',' '
-            $3 ~ /org-wide|all-repos/ && ($6 == "" || $6 ~ /^[[:space:]]*$/) {
-              print "Rivi " NR+1 ": " $0
-            }
-          ')
-          if [ -n "$MISSING" ]; then
-            echo "❌ Kanoninen päätös ilman ops_ref-viittausta:"
-            echo "$MISSING"
-            exit 1
-          fi
-          echo "✅ Kanoniset viittaukset OK"
 
       - name: Tarkista päivämäärämuoto (YYYY-MM-DD)
         run: |
