@@ -1,3 +1,8 @@
+# jira-webhook-relay.yml — välittää GitHub-tapahtumat Jira Automation Incoming Webhook -osoitteeseen
+# GitHub Actions toimii tässä releinä: Jira ei voi vastaanottaa GitHub-webhookeja suoraan
+# ilman erillistä palvelinta. Actions-rele on palveliton vaihtoehto — ei infran ylläpitoa.
+# Tiedosto on identtinen kaikissa organisaation repoissa; deploy-integration.yml huolehtii synkronoinnista.
+
 name: Jira Webhook Relay
 
 on:
@@ -16,10 +21,17 @@ jobs:
           JIRA_WEBHOOK_TOKEN: ${{ secrets.JIRA_WEBHOOK_TOKEN }}
           JIRA_WEBHOOK_URL: ${{ secrets.JIRA_WEBHOOK_URL }}
         run: |
+          # Varhainen exit jos secret puuttuu: vältytään harhaanjohtavalta curl-virheeltä
+          # ja workflow merkitään silti onnistuneeksi (exit 0) eikä riko muita repoja.
           if [ -z "$JIRA_WEBHOOK_URL" ]; then
             echo "::warning::Jira Webhook URL (JIRA_WEBHOOK_URL) secret is missing! Skipping relay."
             exit 0
           fi
+          # toJson() serialisoi GitHub event -objektin JSON-merkkijonoksi;
+          # --data-binary @- lukee payloadin stdin:stä jolloin shell ei tulkitse
+          # erikoismerkkejä (lainausmerkit, aaltosulut) väärin.
+          # X-Automation-Webhook-Token on Jira Automationin odottama header — ilman sitä
+          # Jira palauttaa HTTP 400 (Missing token).
           echo '${{ toJson(github.event) }}' | \
           curl -s -X POST \
             "$JIRA_WEBHOOK_URL" \
