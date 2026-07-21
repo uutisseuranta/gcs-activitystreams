@@ -185,3 +185,105 @@ docs/*                      (missä vaiheessa tahansa)
 | Structured logging jaettu moduuli kaikille jobeille | `mvp` | lisätään `mvp/logging-probes`-PR:n scopeen |
 | WCAG AA -vaatimukset API-virheviestien ihmisluettavuudelle | `hardened` | `hardened/rate-limiting` |
 | Lisenssitarkistus: RSS-lähteiden käyttöehdot (HS, IS, IL, KL, MTV) | `documentation` | `docs/licenses` |
+
+---
+
+## Release — tägijärjestys ja gate-kriteerit
+
+Tägit luodaan kolmessa vaiheessa. Jokainen tägi odottaa edellisen CI-buildin läpimenoa.
+Tägiketju: **patterns → bq-activitystreams → uutisseuranta.github.io**.
+bq-activitystreams tagaa aina toisena.
+
+### v0.1.0 — "CI toimii"
+
+**Gate:** kaikki `0-sprint`-labeliset issuet kiinni, CI-pipeline läpimäissä `main`-haarassa.
+
+```bash
+git tag -a v0.1.0 -m "Release v0.1.0: 0-sprint valmis, CI toimii"
+git push origin v0.1.0
+```
+
+### v0.5.0 — "MVP alpha"
+
+**Gate:** kaikki `mvp`- ja `gdpr`-labeliset issuet kiinni ja patterns `v0.3.0` tagittu. Tarkista:
+
+```bash
+# Avoimet mvp-issuet — nolla ennen tagausta
+gh issue list --label mvp --state open --repo uutisseuranta/bq-activitystreams
+
+# Avoimet gdpr-issuet
+gh issue list --label gdpr --state open --repo uutisseuranta/bq-activitystreams
+
+# Tarkista että patterns v0.3.0 on olemassa
+gh release view v0.3.0 --repo uutisseuranta/patterns
+```
+
+```bash
+git tag -a v0.5.0 -m "Release v0.5.0: MVP alpha — /ap/outbox toimii, GDPR kunnossa"
+git push origin v0.5.0
+```
+
+### v1.0.0 — "Production hardened"
+
+**Gate:** kaikki `hardened`- ja `testing`-labeliset issuet kiinni.
+
+```bash
+gh issue list --label hardened --state open --repo uutisseuranta/bq-activitystreams
+
+git tag -a v1.0.0 -m "Release v1.0.0: tuotantovalmis — rate limiting, DevSecOps, AS2 contract"
+git push origin v1.0.0
+```
+
+### Terraform-infrastruktuuri labelien hallintaan
+
+Repolabelit ja branch protection hallitaan Terraformilla. Katso
+[`terraform/github/backend/labels.tf`](../terraform/github/backend/labels.tf)
+joka provisioi tässä dokumentissa käytetyt labelit (`0-sprint`, `mvp`, `gdpr`,
+`hardened`, `AS2`, `testing`, `enhancement`, `documentation`) sekä `main`-haaran
+suojaussäännöt.
+
+```hcl
+# Esimerkki: terraform/github/backend/labels.tf
+resource "github_issue_label" "mvp" {
+  repository  = "bq-activitystreams"
+  name        = "mvp"
+  color       = "0075ca"
+  description = "MVP-ominaisuudet — vaaditaan alpha-julkaisuun"
+}
+
+resource "github_issue_label" "as2" {
+  repository  = "bq-activitystreams"
+  name        = "AS2"
+  color       = "5319e7"
+  description = "ActivityStreams 2.0 -yhteensopivuus"
+}
+
+resource "github_branch_protection" "main" {
+  repository_id = github_repository.backend.node_id
+  pattern       = "main"
+
+  required_status_checks {
+    strict   = true
+    contexts = ["ci / test"]
+  }
+
+  required_pull_request_reviews {
+    required_approving_review_count = 1
+  }
+}
+```
+
+Aja muutokset:
+
+```bash
+export GITHUB_TOKEN="ghp_..."
+cd terraform/github
+terraform init && terraform plan && terraform apply
+```
+
+### AS2-skeemaversio per release
+
+| Release | AS2-skeemaversio | Muutokset |
+|---|---|---|
+| `v0.5.0` | schema-v1 | Article, Note, Collection, Hashtag peruskentät, `/ap/outbox` |
+| `v1.0.0` | schema-v2 | Content negotiation, Like/Dislike-togglet, `_uutisseuranta:*`-laajennukset |
