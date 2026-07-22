@@ -1,0 +1,15 @@
+# terraform/terraform.tfvars.example
+# Kopioi tiedosto terraform.tfvars:ksi ja täytä oikeat arvot.
+# ÄLÄ committaa terraform.tfvars:ia – se on .gitignoressa.
+#
+# Sensitiiviset arvot (google_client_id) voi asettaa myös
+# ympäristömuuttujana: TF_VAR_google_client_id=...
+
+gcp_project       = "uutisseuranta-activitystreams"
+region            = "europe-north1"
+bq_dataset        = "activitystreams"
+bq_social_dataset = "activitystreams_social"
+sa_name           = "backend"
+google_client_id  = "MUUTA_TÄHÄN"
+write_api_url     = "https://write-api-7y62heo36a-lz.a.run.app"
+allow_mock_auth   = "false"
