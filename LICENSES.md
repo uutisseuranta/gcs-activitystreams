@@ -17,6 +17,23 @@ Tämä tiedosto kuvaa **bq-activitystreams**-repositoriossa käytetyt avoimen l�
 
 ---
 
+## RSS-lähteiden lisenssipolitiikka
+
+Projekti hakee RSS-syötteitä suomalaisista uutismedioista. Tarkistuksen tila per lähde (viite: #62).
+
+| Lähde | RSS-osoite | Tarkistettu | Tarkistusmetodi | Tarkistaja | Tulos |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| Yle | https://feeds.yle.fi/uutiset/v1/majorHeadlines/YLE_UUTISET.rss | ✅ 2026-07-24 | Luettu käyttöehdot: https://yle.fi/aihe/artikkeli/2011/03/07/ylen-sisaltojen-kayttoehdot | @jaakkokorhonen | Sallittu: ei-kaupallinen aggregointi, attribuutio vaaditaan ("Lähde: Yle") |
+| Helsingin Sanomat | https://www.hs.fi/rss/... | ⏳ Odottaa | Käyttöehdot kirjautumisseinän takana — sähköpostikysely lähetetään | | Odottaa |
+| Ilta-Sanomat | https://www.is.fi/rss/... | ⏳ Odottaa | Sähköpostikysely lähetetään | | Odottaa |
+| Iltalehti | https://www.iltalehti.fi/rss/... | ⏳ Odottaa | Sähköpostikysely lähetetään | | Odottaa |
+| Kauppalehti | https://www.kauppalehti.fi/rss/... | ⏳ Odottaa | Sähköpostikysely lähetetään | | Odottaa |
+| MTV Uutiset | https://www.mtvuutiset.fi/rss/... | ⏳ Odottaa | Sähköpostikysely lähetetään | | Odottaa |
+
+**Attribuutiovaatimus (Yle):** Käyttöliittymässä on näytettävä teksti "Lähde: Yle" jokaisen Yle-artikkelin yhteydessä. Tämä koskee `uutisseuranta.github.io #1` (lähteiden aktiivisuus-widget).
+
+---
+
 ## Komponenttien yksityiskohtainen kuvaus
 
 ### 1. FastAPI / Uvicorn / httpx / requests

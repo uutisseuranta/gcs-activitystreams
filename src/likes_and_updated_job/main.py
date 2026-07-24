@@ -1,4 +1,11 @@
 # src/likes_and_updated_job/main.py
+#
+# Cloud Run -job: päivittää like_count + dislike_count + objects.updated
+#
+# Muutoshistoria:
+#   #33/#48 — like_count ja dislike_count lasketaan samassa COUNTIF-kyselyssä
+#             kustannustehokkuuden vuoksi. 7 päivän ikkuna kattaa myös
+#             tilanteet joissa edellinen job-ajo epäonnistui.
 import datetime
 import json
 import logging
@@ -8,7 +15,6 @@ import sys
 from google.cloud import bigquery
 
 
-# Lokitus
 class JsonFormatter(logging.Formatter):
     def format(self, record):
         log_entry = {
@@ -28,7 +34,6 @@ logger = logging.getLogger("likes-and-updated-job")
 
 
 def main() -> None:
-    # Luetaan ympäristömuuttujat
     project = os.getenv("GCP_PROJECT")
     dataset = os.getenv("BQ_DATASET")
     social_dataset = os.getenv("BQ_SOCIAL_DATASET", "activitystreams_social")
@@ -41,31 +46,35 @@ def main() -> None:
 
     bq_client = bigquery.Client(project=project)
 
-    # VAIHE 1: Tykkäyslaskennan päivitys julkiseen objects-tauluun
-    # Laskee kunkin kohteen uniikit tykkäykset likes-taulusta ja päivittää objects.like_count
-    # Estää poistettujen objektien (deleted = TRUE) laskurin päivityksen
-    likes_merge_query = f"""
+    # VAIHE 1: like_count + dislike_count yhdessä COUNTIF-kyselyssä (#33/#48)
+    # 7 päivän ikkuna: kattaa myös tilanteet joissa edellinen ajo epäonnistui.
+    # COUNTIF käy activities-taulun kerran — ei kahta erillistä kyselyä.
+    reaction_merge_query = f"""
         MERGE `{project}.{dataset}.objects` T
         USING (
-          SELECT object_id, COUNT(*) AS cnt
-          FROM `{project}.{social_dataset}.likes`
+          SELECT
+            object_id,
+            COUNTIF(type = 'Like')    AS like_count,
+            COUNTIF(type = 'Dislike') AS dislike_count
+          FROM `{project}.{social_dataset}.activities`
+          WHERE type IN ('Like', 'Dislike')
+            AND DATE(published) >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)
           GROUP BY object_id
         ) S ON T.id = S.object_id
         WHEN MATCHED AND T.deleted = FALSE THEN
-          UPDATE SET T.like_count = S.cnt
+          UPDATE SET
+            T.like_count    = S.like_count,
+            T.dislike_count = S.dislike_count
     """
 
     # VAIHE 2: updated-aikaleiman päivitys thread_root-artikkeleille
-    # Etsii uusimmat aktiviteettiajat received_at (Like ja Create) per ketjun juuri (thread_root)
-    # Suodattaa pois poistetut kommentit activities.Delete mukaisesti
-    # Varmistaa ettei updated-aika koskaan kulje taaksepäin.
     updated_merge_query = f"""
         MERGE `{project}.{dataset}.objects` T
         USING (
           SELECT COALESCE(thread_root, object_id) AS root_url,
                  MAX(received_at) AS last_activity_at
           FROM `{project}.{social_dataset}.activities` a
-          WHERE type IN ('Like', 'Create')
+          WHERE type IN ('Like', 'Dislike', 'Create')
             AND NOT EXISTS (
               SELECT 1 FROM `{project}.{social_dataset}.activities` d
               WHERE d.type = 'Delete' AND d.object_id = a.object_id
@@ -77,14 +86,12 @@ def main() -> None:
     """
 
     try:
-        # 1. Ajetetaan Vaihe 1
-        logger.info("Ajetaan Vaihe 1: Tykkäyslaskurin päivitys (likes -> objects.like_count)...")
-        likes_job = bq_client.query(likes_merge_query)
-        likes_job.result()
-        logger.info("Tykkäyslaskurin päivitys suoritettu onnistuneesti.")
+        logger.info("Ajetaan Vaihe 1: like_count + dislike_count COUNTIF-aggregointi...")
+        reaction_job = bq_client.query(reaction_merge_query)
+        reaction_job.result()
+        logger.info("Reaktiolaskureiden päivitys suoritettu onnistuneesti.")
 
-        # 2. Ajetetaan Vaihe 2
-        logger.info("Ajetaan Vaihe 2: Aktiivisuus-aikaleimojen päivitys (activities -> objects.updated)...")
+        logger.info("Ajetaan Vaihe 2: Aktiivisuus-aikaleimojen päivitys...")
         updated_job = bq_client.query(updated_merge_query)
         updated_job.result()
         logger.info("Aktiivisuus-aikaleimojen päivitys suoritettu onnistuneesti.")
